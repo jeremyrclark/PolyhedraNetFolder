@@ -218,6 +218,15 @@ class OrbitControls extends EventDispatcher {
 				let min = scope.minAzimuthAngle;
 				let max = scope.maxAzimuthAngle;
 
+				// With unlimited azimuth, wrap θ into (−π, π] so dragging past the “back” of the orbit
+				// does not accumulate or stick at ±π (which feels like a ~180° rotation cap).
+				if ( ! ( isFinite( min ) && isFinite( max ) ) ) {
+
+					while ( spherical.theta > Math.PI ) spherical.theta -= twoPI;
+					while ( spherical.theta < - Math.PI ) spherical.theta += twoPI;
+
+				}
+
 				if ( isFinite( min ) && isFinite( max ) ) {
 
 					if ( min < - Math.PI ) min += twoPI; else if ( min > Math.PI ) min -= twoPI;

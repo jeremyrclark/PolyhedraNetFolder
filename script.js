@@ -368,9 +368,6 @@ let currentNetName = "No Net Loaded";
 /** ~54.74° — used for missing library keys and for trial folds without a fold table. */
 const EXPERIMENTAL_FOLD_ANGLE_RAD = Math.acos(1 / Math.sqrt(3));
 
-/** Pause on “failed” trial before auto-unfold (ms). */
-const TRIAL_REBOUND_DELAY_MS = 920;
-
 const TRIAL_FAIL_FLAVORS = [
     "Those hinges were guesses — not a closed solid.",
     "Nice try! The net doesn’t want to become a polyhedron yet.",
@@ -379,12 +376,12 @@ const TRIAL_FAIL_FLAVORS = [
     "The fold table is missing for a reason — keep experimenting.",
     "Physics says *maybe later*. Tweak and run another trial.",
     "Still a flat story. Add or move a face, then retry.",
-    "No trophy this round — unfold incoming!",
+    "No trophy this round — tap Unfold when you're ready.",
 ];
 
 let trialFoldRunCount = 0;
 let trialFoldPauseActive = false;
-let trialReboundDeadline = 0;
+let trialBuzzerAudioContext = null;
 /** Last net JSON loaded successfully (presets / file); not used while relying on builderNetData in builder. */
 let lastLoadedNetData = null;
 
@@ -472,6 +469,33 @@ function getMeshWorldVertices(faceIndex) {
     if (allVertices[faceIndex])
         worldVertices.numSides = allVertices[faceIndex].numSides;
     return worldVertices;
+}
+
+/**
+ * Average world position of all mesh vertices except one face (the flap being folded).
+ * Used to pick fold sign so the flap closes toward the rest of the net.
+ */
+function computeBulkCentroidWorldExcludingFace(excludeFaceId) {
+    const sum = new THREE.Vector3();
+    let count = 0;
+    const addFace = (fid) => {
+        if (fid === excludeFaceId) return;
+        const wv = getMeshWorldVertices(fid);
+        if (!wv) return;
+        for (let i = 0; i < wv.length; i++) {
+            const v = wv[i];
+            if (v instanceof THREE.Vector3) {
+                sum.add(v);
+                count++;
+            }
+        }
+    };
+    addFace(1);
+    for (const key of Object.keys(pivots)) {
+        const fid = parseInt(key, 10);
+        if (!Number.isNaN(fid)) addFace(fid);
+    }
+    return count > 0 ? sum.divideScalar(count) : null;
 }
 
 // Calculates world normal
@@ -928,9 +952,7 @@ function setCreateSectionExpanded(expanded) {
     if (!sec || !btn) return;
     sec.hidden = !expanded;
     btn.setAttribute("aria-expanded", expanded ? "true" : "false");
-    btn.textContent = expanded
-        ? "Hide custom net editor"
-        : "Create a custom net";
+    btn.textContent = expanded ? "Hide Create" : "Create a net";
 }
 
 function showSaveNetFeedback(message) {
@@ -1032,6 +1054,11 @@ function init() {
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.target.set(0, 0, 0);
+    // Full 360° orbit around Y; keep polar angle shy of 0/π to avoid gimbal-style sticking at zenith/nadir
+    controls.minAzimuthAngle = -Infinity;
+    controls.maxAzimuthAngle = Infinity;
+    controls.minPolarAngle = 0.02;
+    controls.maxPolarAngle = Math.PI - 0.02;
     scene.add(createCrosshairAxesHelper(5));
     edgePickGroup = new THREE.Group();
     edgePickGroup.name = "edgePickGroup";
@@ -1189,7 +1216,7 @@ function init() {
             if (
                 isNetBuilderActive &&
                 builderDirty &&
-                !confirmDiscardBuilderWork("Starting a new custom net.")
+                !confirmDiscardBuilderWork("Starting a new net.")
             ) {
                 return;
             }
@@ -1252,12 +1279,29 @@ function init() {
         setCreateSectionExpanded(next);
     });
 
+    document.getElementById("editLoadedNetBtn")?.addEventListener("click", () => {
+        if (isNetBuilderActive) return;
+        const data = getCurrentNetDataSnapshot();
+        if (!data) {
+            alert(
+                "Nothing to edit yet. Load a .json file, pick a preset, or choose a saved net first.",
+            );
+            return;
+        }
+        if (!confirmDiscardBuilderWork("Opening the current net in the editor.")) {
+            return;
+        }
+        enterNetBuilderFromData(data);
+    });
+
     document.getElementById("exportNetJsonBtn")?.addEventListener("click", exportNetJSON);
 
     document.getElementById("saveNetToListBtn")?.addEventListener("click", () => {
         const data = getCurrentNetDataSnapshot();
         if (!data) {
-            alert("Load or create a net first.");
+            alert(
+                "Nothing to save yet. Build a net in the custom editor, load a .json file, or pick a preset first — then use Save to list.",
+            );
             return;
         }
         const name = window.prompt("Name for this net in Saved nets:", "");
@@ -1274,10 +1318,18 @@ function init() {
             netData: data,
             savedAt: Date.now(),
         });
-        NetBuilder.saveCustomPresetsToStorage(presets);
+        try {
+            NetBuilder.saveCustomPresetsToStorage(presets);
+        } catch (err) {
+            alert(
+                `Could not write Saved nets (${err?.message || String(err)}). Try a normal (non-private) window if storage is blocked.`,
+            );
+            return;
+        }
         if (isNetBuilderActive) builderDirty = false;
         refreshSavedNetsSelect();
         showSaveNetFeedback(`Saved “${trimmed}” to Saved nets.`);
+        console.log(`Saved net preset: ${trimmed} (${presets.length} total)`);
     });
 
     exitBuilderBtn?.addEventListener("click", () => {
@@ -1480,7 +1532,7 @@ function loadAndProcessNet(netData, options = {}) {
                 );
             }
             console.warn(
-                `[Custom net] Signature "${signature}" has no fold table — trial Fold uses guessed angles then auto-unfolds.`,
+                `[Custom net] Signature "${signature}" has no fold table — trial Fold uses guessed angles; click Unfold after.`,
             );
             currentFoldAngles = null;
             currentNetName = netData.description || "Custom net";
@@ -1533,10 +1585,10 @@ function handleFileSelect(event) {
                 return;
             }
             exitNetBuilder();
-            loadAndProcessNet(netData);
+            loadAndProcessNet(netData, { allowUnknownSignature: true });
         } catch (error) {
-            console.error("Error parsing JSON file:", error);
-            alert(`Error parsing JSON file: ${error.message}`);
+            console.error("Error loading net JSON file:", error);
+            alert(`Could not load net file: ${error.message}`);
         } finally {
             event.target.value = "";
         }
@@ -1611,7 +1663,6 @@ function clearTrialJuiceVisuals() {
 function resetTrialFoldGameState() {
     trialFoldRunCount = 0;
     trialFoldPauseActive = false;
-    trialReboundDeadline = 0;
     clearTrialJuiceVisuals();
 }
 
@@ -1628,13 +1679,63 @@ function triggerTrialRumble() {
     );
 }
 
+/** Short “game show wrong” buzzer (Web Audio — no asset file). */
+function playTrialFailBuzzer() {
+    try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!trialBuzzerAudioContext) trialBuzzerAudioContext = new AC();
+        const ctx = trialBuzzerAudioContext;
+        void ctx.resume();
+        const t0 = ctx.currentTime + 0.012;
+        const master = ctx.createGain();
+        master.gain.value = 0.13;
+        master.connect(ctx.destination);
+
+        function squareBeep(t, dur, f0, f1) {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = "square";
+            o.frequency.setValueAtTime(f0, t);
+            o.frequency.linearRampToValueAtTime(f1, t + dur);
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(0.32, t + 0.008);
+            g.gain.linearRampToValueAtTime(0.0001, t + dur);
+            o.connect(g);
+            g.connect(master);
+            o.start(t);
+            o.stop(t + dur + 0.025);
+        }
+
+        function sawBuzz(t, dur) {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = "sawtooth";
+            o.frequency.setValueAtTime(280, t);
+            o.frequency.exponentialRampToValueAtTime(65, t + dur);
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(0.38, t + 0.012);
+            g.gain.linearRampToValueAtTime(0.0001, t + dur);
+            o.connect(g);
+            g.connect(master);
+            o.start(t);
+            o.stop(t + dur + 0.03);
+        }
+
+        squareBeep(t0, 0.085, 660, 520);
+        squareBeep(t0 + 0.11, 0.085, 660, 520);
+        sawBuzz(t0 + 0.24, 0.42);
+    } catch {
+        /* autoplay or API blocked */
+    }
+}
+
 /**
- * Beat between “trial fold complete” and auto-unfold: flavor text, rumble, optional early Unfold.
+ * After trial fold finishes: hold the pose until the user clicks Unfold (rumble + buzzer + flavor text).
  */
 function beginTrialReboundPause() {
     trialFoldRunCount += 1;
     trialFoldPauseActive = true;
-    trialReboundDeadline = performance.now() + TRIAL_REBOUND_DELAY_MS;
     isAnimating = false;
     isPaused = false;
     if (pauseButton) {
@@ -1643,17 +1744,18 @@ function beginTrialReboundPause() {
     }
     const flavor = pickTrialFailFlavor(trialFoldRunCount);
     if (infoDisplay) {
-        infoDisplay.textContent = `Trial #${trialFoldRunCount}: ${flavor}`;
+        infoDisplay.textContent = `Trial #${trialFoldRunCount}: ${flavor} — click Unfold when ready.`;
         infoDisplay.classList.remove("trial-juice");
         infoDisplay.offsetWidth;
         infoDisplay.classList.add("trial-juice");
     }
     triggerTrialRumble();
+    playTrialFailBuzzer();
     refreshFoldControlState();
     syncBuilderEdgePicksVisibility();
 }
 
-/** True when the net has flaps but no fold-angle table (trial fold + auto-rebound). */
+/** True when the net has flaps but no fold-angle table (trial fold; user Unfolds manually). */
 function canTrialFoldLayout() {
     return Boolean(f1Mesh && !currentFoldAngles && NUM_ANIMATION_STAGES >= 1);
 }
@@ -1671,51 +1773,77 @@ function setInfoLayoutStatus() {
             : "";
     infoDisplay.textContent =
         NUM_ANIMATION_STAGES >= 1
-            ? `Layout: ${currentNetName}${runs} · no fold table — try Fold for a trial (guessed angles, pause, auto-unfold)`
+            ? `Layout: ${currentNetName}${runs} · no fold table — try Fold for a trial (guessed angles), then Unfold`
             : `Layout: ${currentNetName} · folding unavailable`;
+}
+
+/** Enable “Edit net” when a net is on screen and we are not already in the builder. */
+function refreshEditNetButtonState() {
+    const editBtn = document.getElementById("editLoadedNetBtn");
+    if (!editBtn) return;
+    const snap = getCurrentNetDataSnapshot();
+    const canEdit = Boolean(
+        f1Mesh && snap && !isNetBuilderActive && !isAnimating,
+    );
+    editBtn.disabled = !canEdit;
+    if (canEdit) {
+        editBtn.title =
+            "Open this net in the custom editor to attach, delete, or reshape faces.";
+    } else if (isNetBuilderActive) {
+        editBtn.title =
+            "You are already editing — use Exit when done, or expand Create below.";
+    } else if (isAnimating) {
+        editBtn.title = "Wait for folding or unfolding to finish.";
+    } else {
+        editBtn.title = "Load a preset, a JSON file, or build a net first.";
+    }
 }
 
 /** Fold / trial fold when the net has at least one flap connection. */
 function refreshFoldControlState() {
-    if (!foldButton) return;
-    const hasNet = Boolean(f1Mesh);
-    const canFoldOrTrial =
-        Boolean(currentFoldAngles) || canTrialFoldLayout();
-    if (!hasNet) {
-        foldButton.disabled = true;
-        foldButton.title =
-            "Load a preset, a JSON file, or start a custom net from the Net panel.";
-        foldButton.textContent = "Fold";
-        return;
-    }
-    if (!canFoldOrTrial) {
-        foldButton.disabled = true;
-        foldButton.title =
-            "Add attached faces in the builder (or load a net with connections) to try folding.";
-        foldButton.textContent = "Fold";
-        return;
-    }
-    if (trialFoldPauseActive) {
+    try {
+        if (!foldButton) return;
+        const hasNet = Boolean(f1Mesh);
+        const canFoldOrTrial =
+            Boolean(currentFoldAngles) || canTrialFoldLayout();
+        if (!hasNet) {
+            foldButton.disabled = true;
+            foldButton.title =
+                "Load a preset, a JSON file, or create a net from the Net panel.";
+            foldButton.textContent = "Fold";
+            return;
+        }
+        if (!canFoldOrTrial) {
+            foldButton.disabled = true;
+            foldButton.title =
+                "Add attached faces in the builder (or load a net with connections) to try folding.";
+            foldButton.textContent = "Fold";
+            return;
+        }
+        if (trialFoldPauseActive) {
+            foldButton.disabled = false;
+            foldButton.textContent = "Unfold";
+            foldButton.title =
+                "Return to the flat net (guessed fold didn’t match any known solid).";
+            if (pauseButton) pauseButton.disabled = true;
+            return;
+        }
         foldButton.disabled = false;
-        foldButton.textContent = "Unfold";
-        foldButton.title =
-            "Skip the wait — start unfolding now (or let the timer run out).";
-        if (pauseButton) pauseButton.disabled = true;
-        return;
+        foldButton.title = canTrialFoldLayout()
+            ? "Trial fold: guessed angles for every hinge; when it stops, click Unfold to flatten (no fold table for this layout)."
+            : "";
+        const foldingForward =
+            isAnimating &&
+            currentAnimationStage > 0 &&
+            currentAnimationStage <= NUM_ANIMATION_STAGES;
+        const unfoldingAnim = isAnimating && currentAnimationStage < 0;
+        let showUnfoldLabel = isFolded;
+        if (foldingForward) showUnfoldLabel = true;
+        if (unfoldingAnim) showUnfoldLabel = false;
+        foldButton.textContent = showUnfoldLabel ? "Unfold" : "Fold";
+    } finally {
+        refreshEditNetButtonState();
     }
-    foldButton.disabled = false;
-    foldButton.title = canTrialFoldLayout()
-        ? "Trial fold: guessed angles, a dramatic pause, then auto-unfold (no fold table for this layout)."
-        : "";
-    const foldingForward =
-        isAnimating &&
-        currentAnimationStage > 0 &&
-        currentAnimationStage <= NUM_ANIMATION_STAGES;
-    const unfoldingAnim = isAnimating && currentAnimationStage < 0;
-    let showUnfoldLabel = isFolded;
-    if (foldingForward) showUnfoldLabel = true;
-    if (unfoldingAnim) showUnfoldLabel = false;
-    foldButton.textContent = showUnfoldLabel ? "Unfold" : "Fold";
 }
 
 // --- Geometry & Base Vertex Functions ---
@@ -3183,7 +3311,20 @@ function triggerAnimationStage(stage, meta = {}) {
                 centerG_minus && normalG_minus
                     ? mPointVec3.copy(centerG_minus).add(normalG_minus)
                     : null;
-            if (M1 && M2 && M2_prime) {
+            const bulkC = computeBulkCentroidWorldExcludingFace(faceIndex);
+            if (bulkC && centerG_plus && centerG_minus) {
+                const dBulkPlus = centerG_plus.distanceToSquared(bulkC);
+                const dBulkMinus = centerG_minus.distanceToSquared(bulkC);
+                if (Math.abs(dBulkPlus - dBulkMinus) > 1e-5) {
+                    angleSign = dBulkPlus < dBulkMinus ? 1 : -1;
+                } else if (M1 && M2 && M2_prime) {
+                    const dSq = M1.distanceToSquared(M2);
+                    const dPrimeSq = M1.distanceToSquared(M2_prime);
+                    angleSign = dSq > dPrimeSq ? 1 : -1;
+                } else {
+                    angleSign = 1;
+                }
+            } else if (M1 && M2 && M2_prime) {
                 const dSq = M1.distanceToSquared(M2);
                 const dPrimeSq = M1.distanceToSquared(M2_prime);
                 angleSign = dSq > dPrimeSq ? 1 : -1;
@@ -3213,7 +3354,6 @@ function toggleFold() {
     if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) return;
     if (trialFoldPauseActive) {
         trialFoldPauseActive = false;
-        trialReboundDeadline = 0;
         clearTrialJuiceVisuals();
         if (infoDisplay) {
             infoDisplay.textContent =
@@ -3274,23 +3414,6 @@ function easeInOutQuad(t) {
 
 function animate(currentTime) {
     requestAnimationFrame(animate);
-    const now = performance.now();
-    if (
-        trialFoldPauseActive &&
-        trialReboundDeadline > 0 &&
-        now >= trialReboundDeadline
-    ) {
-        trialFoldPauseActive = false;
-        trialReboundDeadline = 0;
-        clearTrialJuiceVisuals();
-        if (infoDisplay) {
-            infoDisplay.textContent =
-                "Unfolding… (still no fold table for this net)";
-        }
-        triggerAnimationStage(-1);
-        refreshFoldControlState();
-        syncBuilderEdgePicksVisibility();
-    }
     if (isAnimating && !isPaused) {
         const elapsedTime = currentTime - animationStartTime;
         let progress = Math.min(elapsedTime / currentAnimationDuration, 1);
