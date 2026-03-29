@@ -94,7 +94,7 @@
             box-shadow: var(--panel-shadow);
             display: flex;
             flex-direction: column;
-            gap: 11px;
+            gap: 16px;
             backdrop-filter: blur(10px);
             transition: background 0.25s ease, border-color 0.25s ease;
             overflow-y: auto;
@@ -126,7 +126,7 @@
         }
 
         .control-section + .control-section {
-            padding-top: 10px;
+            padding-top: 14px;
             border-top: 1px solid var(--panel-border);
         }
 
@@ -150,9 +150,11 @@
         .row.tight { gap: 6px; }
 
         .row.fill select,
-        .row.fill input[type="file"] {
+        .row.fill input[type="file"],
+        .row.fill .control-input {
             width: 100%;
             min-width: 0;
+            flex: 1;
         }
 
         button {
@@ -208,6 +210,66 @@
             height: 14px;
             accent-color: var(--button-primary-bg);
             cursor: pointer;
+        }
+
+        /* iOS-style theme toggle */
+        .theme-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            width: 100%;
+            min-height: 28px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .theme-toggle .theme-toggle-label {
+            font-size: 12px;
+            color: var(--text);
+            flex: 1;
+        }
+
+        .theme-toggle-input {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .theme-toggle-track {
+            position: relative;
+            width: 44px;
+            height: 26px;
+            flex-shrink: 0;
+            border-radius: 13px;
+            background: var(--input-border);
+            transition: background 0.2s ease;
+        }
+
+        .theme-toggle-thumb {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+            transition: transform 0.2s ease;
+        }
+
+        .theme-toggle-input:checked + .theme-toggle-track {
+            background: var(--button-primary-bg);
+        }
+
+        .theme-toggle-input:checked + .theme-toggle-track .theme-toggle-thumb {
+            transform: translateX(18px);
+        }
+
+        .theme-toggle-input:focus-visible + .theme-toggle-track {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 2px;
         }
 
         input[type="range"] {
@@ -287,12 +349,9 @@
             user-select: none;
         }
 
-        #renderModeLabel {
-            font-size: 11px;
-            font-weight: 600;
+        .render-mode-stops span[data-mode-stop].active {
             color: var(--text);
-            text-align: center;
-            margin-top: 2px;
+            font-weight: 700;
         }
 
         #builderEdgeHint {
@@ -300,20 +359,18 @@
             z-index: 200;
             pointer-events: none;
             display: none;
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--button-primary-bg);
-            text-shadow: 0 0 6px var(--page-bg);
+            font-size: 20px;
+            font-weight: 800;
+            color: #7dffb3;
+            text-shadow:
+                0 0 0 #0d0d10,
+                0 0 8px var(--page-bg),
+                0 0 12px rgba(0, 0, 0, 0.8);
         }
 
         #builderPanel {
             font-size: 11px;
             line-height: 1.4;
-        }
-
-        #builderPanel .builder-help {
-            color: var(--text-muted);
-            margin: 0 0 6px 0;
         }
 
         #builderAttachPanel {
@@ -327,6 +384,125 @@
         #builderAttachPanel .row {
             margin-top: 6px;
         }
+
+        /* Ensure Create sub-panels stay hidden when not active (some flex layouts ignore [hidden]) */
+        #controls [hidden] {
+            display: none !important;
+        }
+
+        .control-input,
+        .control-textarea {
+            width: 100%;
+            min-width: 0;
+            padding: 4px 6px;
+            border-radius: 5px;
+            border: 1px solid var(--input-border);
+            background: var(--input-bg);
+            color: var(--text);
+            font-size: 11px;
+        }
+
+        .control-textarea {
+            font-family: ui-monospace, monospace;
+            font-size: 10px;
+            line-height: 1.35;
+            resize: vertical;
+            min-height: 3.5rem;
+        }
+
+        .control-input:focus-visible,
+        .control-textarea:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 1px;
+        }
+
+        input[type="color"] {
+            width: 36px;
+            height: 26px;
+            padding: 0;
+            border: 1px solid var(--input-border);
+            border-radius: 4px;
+            cursor: pointer;
+            background: var(--input-bg);
+        }
+
+        .save-preset-feedback {
+            min-height: 1.25em;
+            font-size: 10px;
+            color: var(--section-label);
+            margin: 4px 0 0 0;
+            line-height: 1.3;
+        }
+
+        .kbd-hint {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .net-toolbar {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 6px;
+            width: 100%;
+        }
+
+        .net-toolbar .net-icon-btn {
+            flex: 1 1 0;
+            min-width: 0;
+            width: 0;
+            aspect-ratio: 1;
+            height: auto;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            border: 1px solid var(--input-border);
+            background: var(--button-bg);
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .net-toolbar .net-icon-btn:hover:not(:disabled) {
+            background: var(--button-hover);
+        }
+
+        .net-toolbar .net-icon-btn:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        .net-toolbar .net-icon-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .net-toolbar .net-icon-btn img {
+            width: 22px;
+            height: 22px;
+            display: block;
+            pointer-events: none;
+        }
+
+        :root[data-theme="light"] .net-toolbar .net-icon-btn img {
+            filter: brightness(0) saturate(100%);
+        }
+
+        :root[data-theme="dark"] .net-toolbar .net-icon-btn img {
+            filter: none;
+            opacity: 0.95;
+        }
+
+        #toggleCreateSectionBtn {
+            width: 100%;
+        }
+
+        #saveNetFeedback {
+            margin-top: 6px;
+        }
     </style>
 </head>
 <body>
@@ -335,143 +511,32 @@
     <div id="container"></div>
 
     <div id="controls">
-        <section class="control-section" aria-labelledby="sec-animation">
-            <h2 class="section-title" id="sec-animation">Animation</h2>
-            <div class="row">
-                <button type="button" id="foldButton" class="primary">Fold</button>
-                <button type="button" id="pauseButton" disabled>Pause</button>
-            </div>
-            <div class="row tight">
-                <label for="speedSlider">Speed</label>
-                <input type="range" id="speedSlider" min="200" max="4000" value="500" step="100">
-                <span id="speedValue">500 ms</span>
-            </div>
-        </section>
-
-        <section class="control-section" aria-labelledby="sec-look">
-            <h2 class="section-title" id="sec-look">Appearance</h2>
-            <div class="check-row">
-                <input type="checkbox" id="darkCanvas" name="darkCanvas" checked>
-                <label for="darkCanvas">Dark background</label>
-            </div>
-            <div class="check-row">
-                <input type="checkbox" id="toggleNormals" name="toggleNormals">
-                <label for="toggleNormals">Show face normals</label>
-            </div>
-            <div class="render-mode-block">
-                <label for="renderModeSlider">Shading</label>
-                <input type="range" id="renderModeSlider" min="0" max="3" value="2" step="1"
-                    aria-valuemin="0" aria-valuemax="3" aria-valuenow="2"
-                    aria-label="Shading mode">
-                <div class="render-mode-stops">
-                    <span>Wire</span>
-                    <span>Glass</span>
-                    <span>Flat</span>
-                    <span>Render</span>
-                </div>
-                <div id="renderModeLabel">Flat</div>
-            </div>
-        </section>
-
-        <section class="control-section" aria-labelledby="sec-create">
-            <h2 class="section-title" id="sec-create">Create</h2>
-            <p class="builder-help">Start a custom flat net, then attach faces along edges.</p>
-            <div class="row fill tight">
-                <label for="createKindSelect">Base</label>
-                <select id="createKindSelect">
-                    <option value="regular">Regular polygon</option>
-                    <option value="schlafli">Schläfli (first face)</option>
-                    <option value="irregular">Irregular template</option>
-                    <option value="svg">SVG polygon</option>
-                </select>
-            </div>
-            <div class="row fill tight" id="createRowRegular">
-                <label for="createRegularSides">Sides</label>
-                <select id="createRegularSides">
-                    <option value="3">3</option>
-                    <option value="4" selected>4</option>
-                    <option value="5">5</option>
-                    <option value="6">6</option>
-                    <option value="7">7</option>
-                    <option value="8">8</option>
-                    <option value="9">9</option>
-                    <option value="10">10</option>
-                    <option value="11">11</option>
-                    <option value="12">12</option>
-                </select>
-            </div>
-            <div class="row fill tight" id="createRowSchlafli" hidden>
-                <label for="createSchlafliSelect">Symbol</label>
-                <select id="createSchlafliSelect"></select>
-            </div>
-            <div class="row fill tight" id="createRowIrregular" hidden>
-                <label for="createIrregularSelect">Shape</label>
-                <select id="createIrregularSelect"></select>
-            </div>
-            <div class="row fill" id="createRowSvg" hidden>
-                <label for="createSvgTextarea">SVG</label>
-                <textarea id="createSvgTextarea" rows="3" style="width:100%;font-size:10px;font-family:monospace;" placeholder="<polygon points=&quot;0,0 3,0 3,2 0,2&quot;/>"></textarea>
-            </div>
-            <div class="row tight">
-                <label for="createColorInput">Color</label>
-                <input type="color" id="createColorInput" value="#c9b8e8">
-            </div>
-            <div class="row">
-                <button type="button" id="createNetBtn" class="primary">Start custom net</button>
-            </div>
-            <div id="builderPanel" hidden>
-                <p class="builder-help">Turn on <strong>Add faces</strong>, then click a highlighted edge. Orbit is disabled while adding.</p>
-                <div class="check-row">
-                    <input type="checkbox" id="builderAttachToggle">
-                    <label for="builderAttachToggle">Add faces (click edges)</label>
-                </div>
-                <div id="builderAttachPanel" hidden>
-                    <div id="attachEdgeInfo" style="font-weight:600;margin-bottom:4px;"></div>
-                    <div class="row fill tight">
-                        <label for="attachNewFaceKind">New face</label>
-                        <select id="attachNewFaceKind">
-                            <option value="regular">Regular</option>
-                            <option value="irregular">Template</option>
-                        </select>
-                    </div>
-                    <div class="row fill tight" id="attachRowRegular">
-                        <label for="attachRegularSides">Sides</label>
-                        <select id="attachRegularSides">
-                            <option value="3">3</option>
-                            <option value="4" selected>4</option>
-                            <option value="5">5</option>
-                            <option value="6">6</option>
-                            <option value="8">8</option>
-                        </select>
-                    </div>
-                    <div class="row fill tight" id="attachRowIrregular" hidden>
-                        <label for="attachIrregularSelect">Template</label>
-                        <select id="attachIrregularSelect"></select>
-                    </div>
-                    <div class="row tight">
-                        <label for="attachColorInput">Color</label>
-                        <input type="color" id="attachColorInput" value="#b8a9d9">
-                    </div>
-                    <div class="row">
-                        <button type="button" id="attachConfirmBtn" class="primary">Attach</button>
-                        <button type="button" id="attachCancelBtn">Cancel</button>
-                    </div>
-                </div>
-                <div class="row fill tight" style="margin-top:8px;">
-                    <input type="text" id="savePresetNameInput" placeholder="Preset name" style="flex:1;min-width:0;padding:4px 6px;border-radius:4px;border:1px solid var(--input-border);background:var(--input-bg);color:var(--text);font-size:11px;">
-                    <button type="button" id="savePresetBtn">Save</button>
-                </div>
-                <div class="row">
-                    <button type="button" id="exitBuilderBtn">Exit builder</button>
-                </div>
-            </div>
-        </section>
-
         <section class="control-section" aria-labelledby="sec-net">
             <h2 class="section-title" id="sec-net">Net</h2>
+            <input type="file" id="netFile" accept=".json" hidden>
+            <div class="net-toolbar" role="toolbar" aria-label="Net files and export">
+                <button type="button" class="net-icon-btn" id="loadNetFileBtn" title="Load net from file" aria-label="Load net from file">
+                    <img src="icons/open_file.svg" alt="" width="24" height="24" decoding="async">
+                </button>
+                <button type="button" class="net-icon-btn" id="saveNetToListBtn" title="Save net to Saved nets" aria-label="Save net to list">
+                    <img src="icons/save_to_list.svg" alt="" width="24" height="24" decoding="async">
+                </button>
+                <button type="button" class="net-icon-btn" id="exportNetJsonBtn" title="Export net to JSON" aria-label="Export net to JSON">
+                    <img src="icons/file_json.svg" alt="" width="24" height="24" decoding="async">
+                </button>
+                <button type="button" class="net-icon-btn" id="exportPngButton" title="Export to PNG — current view, transparent background" aria-label="Export to PNG">
+                    <img src="icons/file_png.svg" alt="" width="24" height="24" decoding="async">
+                </button>
+                <button type="button" class="net-icon-btn" id="exportSvgButton" title="Export to SVG — current view as vector paths" aria-label="Export to SVG">
+                    <img src="icons/file_svg.svg" alt="" width="24" height="24" decoding="async">
+                </button>
+                <button type="button" class="net-icon-btn" id="exportObjButton" title="Export to OBJ — Wavefront 3D mesh" aria-label="Export to OBJ">
+                    <img src="icons/file_obj.svg" alt="" width="24" height="24" decoding="async">
+                </button>
+            </div>
             <div class="row fill">
-                <select id="presetNets" aria-label="Preset nets">
-            <option value="">Choose a preset net…</option>
+                <select id="presetNets" aria-label="Load a preset net">
+            <option value="">Load a preset net</option>
             <optgroup label="Platonic solids">
               <option value="tetrahedron-top">Tetrahedron</option>
               <option value="cube-top">Cube</option>
@@ -509,15 +574,198 @@
           </select>
             </div>
             <div class="row fill tight">
-                <label for="netFile">JSON file</label>
-                <input type="file" id="netFile" accept=".json">
+                <select id="savedNetsSelect" aria-label="Saved nets">
+                    <option value="">Saved nets</option>
+                </select>
+            </div>
+            <div class="row fill" style="margin-top: 2px;">
+                <button type="button" id="toggleCreateSectionBtn" aria-expanded="false">Create a custom net</button>
+            </div>
+            <p id="saveNetFeedback" class="save-preset-feedback" hidden aria-live="polite"></p>
+        </section>
+
+        <section class="control-section" id="createSection" hidden aria-labelledby="sec-create">
+            <h2 class="section-title" id="sec-create">Create</h2>
+            <div class="row fill tight">
+                <label for="createKindSelect">Base</label>
+                <select id="createKindSelect">
+                    <option value="regular">Regular polygon</option>
+                    <option value="schlafli">Schläfli symbol</option>
+                    <option value="irregular">Irregular template</option>
+                    <option value="svg">SVG polygon</option>
+                </select>
+            </div>
+            <div class="row fill tight" id="createRowRegular">
+                <label for="createRegularSides">Sides</label>
+                <select id="createRegularSides">
+                    <option value="3">3</option>
+                    <option value="4" selected>4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                    <option value="7">7</option>
+                    <option value="8">8</option>
+                    <option value="9">9</option>
+                    <option value="10">10</option>
+                    <option value="11">11</option>
+                    <option value="12">12</option>
+                </select>
+            </div>
+            <div id="createRowSchlafli" hidden>
+                <div class="row fill tight">
+                    <label for="createSchlafliInput">Symbol</label>
+                    <input type="text" id="createSchlafliInput" class="control-input"
+                        value="6"
+                        placeholder="e.g. 6, 5/2, {7/3}, {4,3}"
+                        autocomplete="off" spellcheck="false">
+                </div>
+                <p class="kbd-hint" style="margin-top:6px;margin-bottom:0;">Regular: a whole number. Star: n/m. Forms with commas use the first part only (e.g. {4,3} → square).</p>
+            </div>
+            <div class="row fill tight" id="createRowIrregular" hidden>
+                <label for="createIrregularSelect">Shape</label>
+                <select id="createIrregularSelect"></select>
+            </div>
+            <div class="row fill" id="createRowSvg" hidden>
+                <label for="createSvgTextarea">SVG</label>
+                <textarea id="createSvgTextarea" class="control-textarea" rows="3" placeholder="<polygon points=&quot;0,0 3,0 3,2 0,2&quot;/>"></textarea>
+            </div>
+            <div class="row tight">
+                <label for="createColorInput">Color</label>
+                <input type="color" id="createColorInput" value="#c9b8e8">
+            </div>
+            <div class="row" style="flex-wrap: nowrap; gap: 6px;">
+                <button type="button" id="buildCustomNetBtn" class="primary" style="flex: 1; min-width: 0;">Build net</button>
+                <button type="button" id="exitBuilderBtn" disabled title="Exit builder">Exit</button>
+            </div>
+            <div id="builderPanel" hidden>
+                <div id="builderFacePanel" class="builder-face-panel" hidden>
+                    <div id="builderSelectedFaceLabel" style="font-weight:600;margin-bottom:6px;">Face —</div>
+                    <div class="row" style="margin-bottom:8px;">
+                        <button type="button" id="builderDeleteFaceBtn">Delete face</button>
+                    </div>
+                    <div class="section-title" style="margin:8px 0 4px;">Replace shape</div>
+                    <div class="row fill tight">
+                        <label for="editFaceKindSelect">Shape</label>
+                        <select id="editFaceKindSelect">
+                            <option value="regular">Regular</option>
+                            <option value="schlafli">Schläfli</option>
+                            <option value="irregular">Template</option>
+                        </select>
+                    </div>
+                    <div class="row fill tight" id="editRowSchlafli" hidden>
+                        <label for="editFaceSchlafliInput">Symbol</label>
+                        <input type="text" id="editFaceSchlafliInput" class="control-input"
+                            placeholder="e.g. 3, 5/2, {6}"
+                            autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="row fill tight" id="editRowRegular">
+                        <label for="editFaceRegularSidesSelect">Sides</label>
+                        <select id="editFaceRegularSidesSelect">
+                            <option value="3">3</option>
+                            <option value="4" selected>4</option>
+                            <option value="5">5</option>
+                            <option value="6">6</option>
+                            <option value="7">7</option>
+                            <option value="8">8</option>
+                            <option value="9">9</option>
+                            <option value="10">10</option>
+                            <option value="11">11</option>
+                            <option value="12">12</option>
+                        </select>
+                    </div>
+                    <div class="row fill tight" id="editRowIrregular" hidden>
+                        <label for="editFaceIrregularSelect">Template</label>
+                        <select id="editFaceIrregularSelect"></select>
+                    </div>
+                    <div class="row tight">
+                        <label for="editFaceColorInput">Color</label>
+                        <input type="color" id="editFaceColorInput" value="#c9b8e8">
+                    </div>
+                    <div class="row" style="margin-top:6px;">
+                        <button type="button" id="applyReplaceFaceBtn" class="primary">Apply new shape</button>
+                    </div>
+                </div>
+                <div id="builderAttachPanel" hidden>
+                    <div id="attachEdgeInfo" style="font-weight:600;margin-bottom:4px;"></div>
+                    <div class="row fill tight">
+                        <label for="attachNewFaceKind">New face</label>
+                        <select id="attachNewFaceKind">
+                            <option value="regular">Regular</option>
+                            <option value="schlafli">Schläfli</option>
+                            <option value="irregular">Template</option>
+                        </select>
+                    </div>
+                    <div class="row fill tight" id="attachRowSchlafli" hidden>
+                        <label for="attachSchlafliInput">Symbol</label>
+                        <input type="text" id="attachSchlafliInput" class="control-input"
+                            placeholder="e.g. 3, 5/2, {6}"
+                            autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="row fill tight" id="attachRowRegular">
+                        <label for="attachRegularSides">Sides</label>
+                        <select id="attachRegularSides">
+                            <option value="3">3</option>
+                            <option value="4" selected>4</option>
+                            <option value="5">5</option>
+                            <option value="6">6</option>
+                            <option value="7">7</option>
+                            <option value="8">8</option>
+                            <option value="9">9</option>
+                            <option value="10">10</option>
+                            <option value="11">11</option>
+                            <option value="12">12</option>
+                        </select>
+                    </div>
+                    <div class="row fill tight" id="attachRowIrregular" hidden>
+                        <label for="attachIrregularSelect">Template</label>
+                        <select id="attachIrregularSelect"></select>
+                    </div>
+                    <div class="row tight">
+                        <label for="attachColorInput">Color</label>
+                        <input type="color" id="attachColorInput" value="#b8a9d9">
+                    </div>
+                    <div class="row">
+                        <button type="button" id="attachConfirmBtn" class="primary">Attach</button>
+                        <button type="button" id="attachCancelBtn">Cancel</button>
+                    </div>
+                </div>
             </div>
         </section>
 
-        <section class="control-section" aria-labelledby="sec-export">
-            <h2 class="section-title" id="sec-export">Export</h2>
+        <section class="control-section" aria-labelledby="sec-look">
+            <h2 class="section-title" id="sec-look">Appearance</h2>
+            <label class="theme-toggle">
+                <span class="theme-toggle-label" id="darkCanvasLabel">Dark background</span>
+                <input type="checkbox" id="darkCanvas" name="darkCanvas" class="theme-toggle-input" checked role="switch" aria-checked="true" aria-labelledby="darkCanvasLabel">
+                <span class="theme-toggle-track" aria-hidden="true"><span class="theme-toggle-thumb"></span></span>
+            </label>
+            <div class="check-row">
+                <input type="checkbox" id="toggleNormals" name="toggleNormals">
+                <label for="toggleNormals">Show face normals</label>
+            </div>
+            <div class="render-mode-block">
+                <label for="renderModeSlider">Shading</label>
+                <input type="range" id="renderModeSlider" min="0" max="3" value="2" step="1"
+                    aria-valuemin="0" aria-valuemax="3" aria-valuenow="2"
+                    aria-label="Shading mode">
+                <div class="render-mode-stops" id="renderModeStops">
+                    <span data-mode-stop="0">Wire</span>
+                    <span data-mode-stop="1">Glass</span>
+                    <span data-mode-stop="2">Flat</span>
+                    <span data-mode-stop="3">Render</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="sec-animation">
+            <h2 class="section-title" id="sec-animation">Animation</h2>
             <div class="row">
-                <button type="button" id="exportObjButton">Export OBJ</button>
+                <button type="button" id="foldButton" class="primary">Fold</button>
+                <button type="button" id="pauseButton" disabled>Pause</button>
+            </div>
+            <div class="row tight">
+                <label for="speedSlider">Speed</label>
+                <input type="range" id="speedSlider" min="200" max="4000" value="500" step="100">
+                <span id="speedValue">500 ms</span>
             </div>
         </section>
     </div>

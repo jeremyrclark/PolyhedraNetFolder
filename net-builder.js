@@ -5,7 +5,10 @@
 
 const STORAGE_KEY = "polyhedraNetFolder.customPresets.v1";
 
-/** Schläfli symbol → regular base face side count (first face type of the solid). */
+/**
+ * Legacy lookup: full polyhedral Schläfli string → first face side count.
+ * Free-form text now uses {@link parseSchlafliSymbol}; kept for presets / reference.
+ */
 export const SCHLAFLI_BASE_SIDES = {
     "{3,3}": 3,
     "{4,3}": 4,
@@ -18,8 +21,152 @@ export const SCHLAFLI_BASE_SIDES = {
     "{3,3,3,3,5}": 3,
 };
 
+const SCHLAFLI_MAX_N = 48;
+
+function gcdU(a, b) {
+    let x = Math.abs(a);
+    let y = Math.abs(b);
+    while (y) {
+        const t = y;
+        y = x % y;
+        x = t;
+    }
+    return x || 1;
+}
+
+/** Strip optional outer { … } and trim. */
+export function normalizeSchlafliInput(raw) {
+    if (raw == null || typeof raw !== "string") return "";
+    let t = raw.trim();
+    if (t.startsWith("{") && t.endsWith("}")) {
+        t = t.slice(1, -1).trim();
+    }
+    return t;
+}
+
+/**
+ * Vertices [[x,z],…] for regular star polygon {n/m} in xz, first edge length = edgeLength.
+ * Winding matches the main app’s regular n-gon (first vertex at bottom-ish).
+ */
+export function starPolygonVerticesXZ(n, m, edgeLength) {
+    const g = gcdU(n, m);
+    if (g !== 1) {
+        throw new Error(`{${n}/${m}}: n and m must be coprime.`);
+    }
+    if (n < 3 || n > SCHLAFLI_MAX_N) {
+        throw new Error(`n must be between 3 and ${SCHLAFLI_MAX_N}.`);
+    }
+    if (m < 1 || 2 * m >= n) {
+        throw new Error("For a star polygon use 1 ≤ m < n/2 (e.g. 5/2, 7/3).");
+    }
+    const sinChord = Math.sin((Math.PI * m) / n);
+    if (sinChord < 1e-9) {
+        throw new Error("Degenerate star polygon.");
+    }
+    const R = edgeLength / (2 * sinChord);
+    const angleStep = (2 * Math.PI) / n;
+    const startAngle = -Math.PI / 2 - Math.PI / n;
+    const verts = [];
+    for (let k = 0; k < n; k++) {
+        const idx = (k * m) % n;
+        const ang = startAngle + idx * angleStep;
+        verts.push([R * Math.cos(ang), R * Math.sin(ang)]);
+    }
+    return verts;
+}
+
+/**
+ * Parse Schläfli-style text into a base face:
+ * - Integer n → regular n-gon ({@link noSides}).
+ * - n/m → regular star polygon vertices (first edge length = edgeLength).
+ * - Polyhedral `{p,q,…}` → first entry only: p or p/q as above.
+ *
+ * @param {string} raw - e.g. "6", "{5/2}", "7/3", "{4,3}"
+ * @param {number} edgeLength - chord length for the first edge (hinge / unit scale)
+ * @returns {{ noSides: number } | { vertices: number[][] }}
+ */
+export function schlafliTextToFaceSpec(raw, edgeLength) {
+    const inner = normalizeSchlafliInput(raw);
+    if (!inner) {
+        throw new Error("Enter a Schläfli symbol (e.g. 6 or 5/2).");
+    }
+    const firstToken = inner.split(",")[0].trim();
+    if (!firstToken) {
+        throw new Error("Enter a Schläfli symbol (e.g. 6 or 5/2).");
+    }
+    const frac = firstToken.match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (frac) {
+        const n = parseInt(frac[1], 10);
+        const m = parseInt(frac[2], 10);
+        if (
+            !Number.isFinite(edgeLength) ||
+            edgeLength <= 0
+        ) {
+            throw new Error("Invalid edge length for star polygon.");
+        }
+        const vertices = starPolygonVerticesXZ(n, m, edgeLength);
+        return { vertices };
+    }
+    const intOnly = firstToken.match(/^(\d+)$/);
+    if (intOnly) {
+        const n = parseInt(intOnly[1], 10);
+        if (n < 3 || n > SCHLAFLI_MAX_N) {
+            throw new Error(
+                `Side count must be between 3 and ${SCHLAFLI_MAX_N}.`,
+            );
+        }
+        return { noSides: n };
+    }
+    throw new Error(
+        `Could not parse "${raw}". Try an integer (6), a star n/m (5/2), or polyhedral {4,3}.`,
+    );
+}
+
 /** Named irregular polygons in flat net xz coordinates ([x,z] each). */
 export const IRREGULAR_POLYGON_LIBRARY = {
+    isosceles_triangle: {
+        name: "Isosceles triangle",
+        vertices: [
+            [0, 0],
+            [4, 0],
+            [2, 3],
+        ],
+    },
+    scalene_triangle: {
+        name: "Scalene triangle",
+        vertices: [
+            [0, 0],
+            [5, 0],
+            [1.2, 2.8],
+        ],
+    },
+    trapezoid: {
+        name: "Trapezoid",
+        vertices: [
+            [0, 0],
+            [4, 0],
+            [3.2, 2],
+            [0.8, 2],
+        ],
+    },
+    rhombus: {
+        name: "Rhombus",
+        vertices: [
+            [0, 0],
+            [3, 0],
+            [4.72, 2.46],
+            [1.72, 2.46],
+        ],
+    },
+    kite_symmetric: {
+        name: "Kite",
+        vertices: [
+            [0, -0.85],
+            [2.5, 0],
+            [0, 2.9],
+            [-2.5, 0],
+        ],
+    },
     kite_quad: {
         name: "Kite quadrilateral",
         vertices: [
@@ -27,6 +174,35 @@ export const IRREGULAR_POLYGON_LIBRARY = {
             [3, 0],
             [2.7, 2.5],
             [-0.2, 2.8],
+        ],
+    },
+    irregular_quad: {
+        name: "Irregular quadrilateral",
+        vertices: [
+            [0, 0],
+            [3.5, 0.25],
+            [2.9, 2.5],
+            [-0.3, 1.7],
+        ],
+    },
+    house_pent: {
+        name: "House pentagon",
+        vertices: [
+            [0, 0],
+            [3, 0],
+            [3, 1.8],
+            [1.5, 3.2],
+            [0, 1.8],
+        ],
+    },
+    irregular_pentagon: {
+        name: "Irregular pentagon",
+        vertices: [
+            [0, 0],
+            [3.2, 0],
+            [3.8, 1.6],
+            [1.4, 3],
+            [-0.6, 1.1],
         ],
     },
     skinny_hex: {
@@ -40,14 +216,15 @@ export const IRREGULAR_POLYGON_LIBRARY = {
             [-0.7, 1.3],
         ],
     },
-    house_pent: {
-        name: "House pentagon",
+    irregular_hexagon: {
+        name: "Irregular hexagon",
         vertices: [
             [0, 0],
-            [3, 0],
-            [3, 1.8],
-            [1.5, 3.2],
-            [0, 1.8],
+            [2.6, 0],
+            [3.6, 1.1],
+            [3, 2.7],
+            [0.9, 3.2],
+            [-0.9, 1.4],
         ],
     },
 };
@@ -157,15 +334,34 @@ function dedupeClosePoints(pts) {
     return out.length >= 3 ? out : null;
 }
 
-export function buildStarterNet({ kind, schlafliKey, irregularKey, color }) {
+export function buildStarterNet({
+    kind,
+    schlafliKey,
+    irregularKey,
+    color,
+    edgeLength = 3,
+}) {
     const col = color || "#c9b8e8";
+    const L =
+        edgeLength != null && Number.isFinite(edgeLength) && edgeLength > 0
+            ? edgeLength
+            : 3;
     if (kind === "schlafli") {
-        const n = SCHLAFLI_BASE_SIDES[schlafliKey];
-        if (!n)
-            throw new Error("Unknown Schläfli symbol for starter face.");
+        const label = String(schlafliKey ?? "").trim() || "Schläfli";
+        const spec = schlafliTextToFaceSpec(label, L);
+        if (spec.noSides != null) {
+            return {
+                description: `Custom net (Schläfli ${label})`,
+                baseFace: { noSides: spec.noSides, color: col },
+                connections: [],
+            };
+        }
         return {
-            description: `Custom net (Schläfli base ${schlafliKey})`,
-            baseFace: { noSides: n, color: col },
+            description: `Custom net (Schläfli ${label})`,
+            baseFace: {
+                vertices: spec.vertices.map((p) => [...p]),
+                color: col,
+            },
             connections: [],
         };
     }
@@ -191,7 +387,7 @@ export function buildStarterNet({ kind, schlafliKey, irregularKey, color }) {
 }
 
 /**
- * Append a flap to netData. newFaceSpec: { noSides } | { vertices }.
+ * Append a flap to netData. newFaceSpec: { noSides } | { vertices } | { schlafliText }.
  * parentEdge: { parentFaceId, v0, v1 } vertex indices on parent polygon (in allVertices order).
  */
 export function getFaceSideCount(netData, faceId) {
@@ -240,10 +436,44 @@ export function appendFlapToNet(
         toEdge: [a, b],
         color: color || "#b8a9d9",
     };
+    applyFlapShapeSpecToConnection(conn, newFaceSpec, options);
+    const usedKey = edgeKey(parentId, parentEdge.v0, parentEdge.v1);
+    return { connection: conn, nextFrom, usedKey };
+}
+
+/**
+ * Set noSides / vertices / vertexScale on an existing connection object (mutates).
+ * Used when attaching a new flap and when replacing an attached face's shape.
+ */
+export function applyFlapShapeSpecToConnection(conn, newFaceSpec, options = {}) {
     const hm = options.hingeMatchLength;
-    const hingeOk =
-        hm != null && Number.isFinite(hm) && hm > 0;
-    if (newFaceSpec.vertices) {
+    const hingeOk = hm != null && Number.isFinite(hm) && hm > 0;
+    const refL = options.referenceSideLength ?? 3;
+    const edgeLenForShape = hingeOk ? hm : refL;
+
+    delete conn.noSides;
+    delete conn.vertices;
+    delete conn.vertexScale;
+
+    if (newFaceSpec.schlafliText != null) {
+        const spec = schlafliTextToFaceSpec(
+            String(newFaceSpec.schlafliText),
+            edgeLenForShape,
+        );
+        if (spec.noSides != null) {
+            conn.noSides = spec.noSides;
+            if (
+                hingeOk &&
+                refL != null &&
+                Number.isFinite(refL) &&
+                refL > 0
+            ) {
+                conn.vertexScale = hm / refL;
+            }
+        } else {
+            conn.vertices = spec.vertices.map((p) => [...p]);
+        }
+    } else if (newFaceSpec.vertices) {
         conn.vertices = newFaceSpec.vertices.map((p) => [...p]);
         if (hingeOk) {
             const v0 = conn.vertices[0];
@@ -267,9 +497,8 @@ export function appendFlapToNet(
                 }
             }
         }
-    } else {
+    } else if (newFaceSpec.noSides != null) {
         conn.noSides = newFaceSpec.noSides;
-        const refL = options.referenceSideLength;
         if (
             hingeOk &&
             refL != null &&
@@ -278,9 +507,198 @@ export function appendFlapToNet(
         ) {
             conn.vertexScale = hm / refL;
         }
+    } else {
+        throw new Error(
+            "Invalid new face: need Schläfli text, vertices, or noSides.",
+        );
     }
-    const usedKey = edgeKey(parentId, parentEdge.v0, parentEdge.v1);
-    return { connection: conn, nextFrom, usedKey };
+}
+
+function childFaceIdsAttachedTo(netData, parentFaceId) {
+    const out = [];
+    for (const c of netData.connections || []) {
+        if (c.to === parentFaceId) out.push(c.from);
+    }
+    return out;
+}
+
+/** All faces in the subtree rooted at rootFaceId (including root). */
+export function collectSubtreeFaceIds(netData, rootFaceId) {
+    const out = new Set([rootFaceId]);
+    const stack = [rootFaceId];
+    while (stack.length) {
+        const p = stack.pop();
+        for (const cid of childFaceIdsAttachedTo(netData, p)) {
+            if (!out.has(cid)) {
+                out.add(cid);
+                stack.push(cid);
+            }
+        }
+    }
+    return out;
+}
+
+/** Descendants only (faces attached below parentFaceId, not parent itself). */
+export function collectDescendantFaceIds(netData, parentFaceId) {
+    const out = new Set();
+    const stack = [...childFaceIdsAttachedTo(netData, parentFaceId)];
+    while (stack.length) {
+        const id = stack.pop();
+        if (out.has(id)) continue;
+        out.add(id);
+        for (const cid of childFaceIdsAttachedTo(netData, id)) stack.push(cid);
+    }
+    return out;
+}
+
+/**
+ * Renumber faces to consecutive 1…N (base = 1, BFS order). Keeps connection order valid for loaders.
+ */
+export function canonicalizeNetFaceIds(netData) {
+    const conns = netData.connections || [];
+    const present = new Set([1]);
+    for (const c of conns) present.add(c.from);
+
+    const order = [];
+    const visited = new Set();
+    const queue = [1];
+    visited.add(1);
+    while (queue.length) {
+        const u = queue.shift();
+        order.push(u);
+        const children = conns
+            .filter((c) => c.to === u)
+            .map((c) => c.from)
+            .sort((a, b) => a - b);
+        for (const v of children) {
+            if (!visited.has(v)) {
+                visited.add(v);
+                queue.push(v);
+            }
+        }
+    }
+
+    if (visited.size !== present.size) {
+        throw new Error("Net graph is disconnected or has orphan faces; cannot canonicalize.");
+    }
+    for (const c of conns) {
+        if (!visited.has(c.from) || !visited.has(c.to)) {
+            throw new Error(
+                "Net has invalid parent/child references; cannot canonicalize.",
+            );
+        }
+    }
+
+    const map = new Map();
+    for (let i = 0; i < order.length; i++) {
+        map.set(order[i], i + 1);
+    }
+
+    for (const c of conns) {
+        c.from = map.get(c.from);
+        c.to = map.get(c.to);
+    }
+    netData.connections = conns.slice().sort((a, b) => a.from - b.from);
+}
+
+/**
+ * Remove a face and everything attached to it. Face 1 removes all flaps (connections only).
+ * Renumbers remaining faces to consecutive IDs.
+ */
+export function removeFaceSubtreeFromNet(netData, faceId) {
+    if (faceId === 1) {
+        netData.connections = [];
+        canonicalizeNetFaceIds(netData);
+        return;
+    }
+    const subtree = collectSubtreeFaceIds(netData, faceId);
+    netData.connections = (netData.connections || []).filter(
+        (c) => !subtree.has(c.from),
+    );
+    canonicalizeNetFaceIds(netData);
+}
+
+/**
+ * Apply shape spec to baseFace (mutates baseFace). Clears all connections if side count changes.
+ */
+export function replaceBaseFaceInNet(netData, newFaceSpec, color, options = {}) {
+    const refL = options.referenceSideLength ?? 3;
+    const prevSides = getFaceSideCount(netData, 1);
+    const base = netData.baseFace;
+    if (!base) throw new Error("Missing baseFace.");
+
+    delete base.noSides;
+    delete base.vertices;
+    delete base.vertexScale;
+
+    if (newFaceSpec.schlafliText != null) {
+        const spec = schlafliTextToFaceSpec(
+            String(newFaceSpec.schlafliText),
+            refL,
+        );
+        if (spec.noSides != null) {
+            base.noSides = spec.noSides;
+        } else {
+            base.vertices = spec.vertices.map((p) => [...p]);
+        }
+    } else if (newFaceSpec.vertices) {
+        base.vertices = newFaceSpec.vertices.map((p) => [...p]);
+    } else if (newFaceSpec.noSides != null) {
+        base.noSides = newFaceSpec.noSides;
+    } else {
+        throw new Error("Invalid base face spec.");
+    }
+
+    if (color != null && color !== "") base.color = color;
+
+    const nextSides = getFaceSideCount(netData, 1);
+    if (prevSides != null && nextSides != null && prevSides !== nextSides) {
+        netData.connections = [];
+    }
+    canonicalizeNetFaceIds(netData);
+}
+
+/**
+ * Replace geometry for an attached face (from ≥ 2). Optionally drops descendants if side count changes.
+ */
+export function replaceAttachedFaceShapeInNet(
+    netData,
+    faceId,
+    newFaceSpec,
+    color,
+    options = {},
+) {
+    if (faceId < 2) {
+        throw new Error("Use replaceBaseFaceInNet for the base polygon.");
+    }
+    const conns = netData.connections || [];
+    const conn = conns.find((c) => c.from === faceId);
+    if (!conn) throw new Error(`No connection for face ${faceId}.`);
+
+    const prevSides = getFaceSideCount(netData, faceId);
+    const hm = options.hingeMatchLength;
+    const hingeOk = hm != null && Number.isFinite(hm) && hm > 0;
+    if (!hingeOk) {
+        throw new Error("replaceAttachedFaceShapeInNet requires hingeMatchLength.");
+    }
+
+    applyFlapShapeSpecToConnection(conn, newFaceSpec, {
+        hingeMatchLength: hm,
+        referenceSideLength: options.referenceSideLength ?? 3,
+    });
+    if (color != null && color !== "") conn.color = color;
+
+    const nextSides = conn.noSides ?? conn.vertices?.length ?? null;
+    if (
+        prevSides != null &&
+        nextSides != null &&
+        prevSides !== nextSides &&
+        collectDescendantFaceIds(netData, faceId).size > 0
+    ) {
+        const drop = collectDescendantFaceIds(netData, faceId);
+        netData.connections = conns.filter((c) => !drop.has(c.from));
+    }
+    canonicalizeNetFaceIds(netData);
 }
 
 export function edgeKey(faceId, a, b) {
