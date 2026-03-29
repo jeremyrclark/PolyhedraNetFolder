@@ -5,7 +5,8 @@ console.log(
 
 // --- Imports ---
 import * as THREE from "three";
-import { OrbitControls } from './js/OrbitControls.js';
+import { OrbitControls } from "./js/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 // --- Global Variables ---
 let scene;
@@ -19,6 +20,7 @@ const normalHelpers = {}; // Stores references to ArrowHelper objects
 
 // --- Configuration ---
 const sideLength = 3;
+const TRANSLUCENT_FACE_OPACITY = 0.48;
 let NUM_ANIMATION_STAGES = 0; // Initialized to 0, set when net is loaded
 let currentAnimationDuration = 500; // Default speed
 
@@ -41,6 +43,19 @@ let speedValueSpan;
 let toggleNormalsCheckbox;
 let netFileInput;
 let infoDisplay;
+let exportObjButton;
+let darkCanvasCheckbox;
+let renderModeSlider;
+let renderModeLabel;
+let ambientLight;
+let hemiLight;
+let directionalLight;
+let fillLight;
+let shadowGround = null;
+
+const RENDER_MODES = ["wireframe", "translucent", "flat", "rendered"];
+const RENDER_MODE_LABELS = ["Wireframe", "Translucent", "Flat", "Rendered"];
+let currentRenderModeIndex = 2;
 
 // --- Data Tables ---
 
@@ -281,6 +296,16 @@ const POLYHEDRON_DATA = {
             "5-3": 0.4725,
         },
     },
+    "rhombic-dodecahedron": {
+        name: "Rhombic Dodecahedron",
+        faceCounts: {
+            4: 12,
+        },
+        foldAngles: {
+            // Interior dihedral 120° (2π/3); rotation from flat = π − dihedral = π/3
+            "4-4": Math.PI / 3,
+        },
+    },
 };
 
 // Helper function to generate a canonical face count signature string
@@ -496,23 +521,170 @@ function calculateHypotheticalWorldVertices(faceIndex, angle) {
     return validWorldVertices.length >= 3 ? validWorldVertices : null;
 }
 
+function sanitizeForFilename(name) {
+    const s = String(name || "polyhedron")
+        .trim()
+        .replace(/[^\w\-]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    return s || "polyhedron";
+}
+
+function getExportableFaceMeshes() {
+    const meshes = [];
+    if (f1Mesh?.geometry?.attributes?.position) {
+        meshes.push({ index: 1, mesh: f1Mesh });
+    }
+    const pivotIndices = Object.keys(pivots)
+        .map((k) => parseInt(k, 10))
+        .filter((n) => !Number.isNaN(n))
+        .sort((a, b) => a - b);
+    for (const idx of pivotIndices) {
+        const pivot = pivots[idx];
+        if (!pivot) continue;
+        for (let c = 0; c < pivot.children.length; c++) {
+            const child = pivot.children[c];
+            if (child.isMesh && child.geometry?.attributes?.position) {
+                meshes.push({ index: idx, mesh: child });
+                break;
+            }
+        }
+    }
+    return meshes;
+}
+
+/** Quantized position key for welding; matches precision used in getMeshWorldVertices. */
+function weldPositionKey(v) {
+    return `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
+}
+
+function buildOBJString() {
+    scene.updateMatrixWorld(true);
+    const entries = getExportableFaceMeshes();
+    if (entries.length === 0) return "";
+
+    const weldedPositions = [];
+    const keyToWeldedIndex = new Map();
+    const faceTriangles = [];
+
+    const tempVec = new THREE.Vector3();
+
+    function weldVertex() {
+        const key = weldPositionKey(tempVec);
+        let idx = keyToWeldedIndex.get(key);
+        if (idx === undefined) {
+            idx = weldedPositions.length;
+            keyToWeldedIndex.set(key, idx);
+            weldedPositions.push({
+                x: tempVec.x,
+                y: tempVec.y,
+                z: tempVec.z,
+            });
+        }
+        return idx;
+    }
+
+    for (const { index, mesh } of entries) {
+        const pos = mesh.geometry.attributes.position;
+        const count = pos.count;
+        for (let i = 0; i < count; i += 3) {
+            tempVec.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+            const ia = weldVertex();
+            tempVec.fromBufferAttribute(pos, i + 1).applyMatrix4(mesh.matrixWorld);
+            const ib = weldVertex();
+            tempVec.fromBufferAttribute(pos, i + 2).applyMatrix4(mesh.matrixWorld);
+            const ic = weldVertex();
+            faceTriangles.push({ faceIndex: index, a: ia, b: ib, c: ic });
+        }
+    }
+
+    const lines = [];
+    const safeObjName = sanitizeForFilename(currentNetName);
+    lines.push("# Wavefront OBJ exported from Folding Polyhedron Net");
+    lines.push("# Vertices welded by 5-decimal quantization (see weldPositionKey).");
+    lines.push(`o ${safeObjName}`);
+
+    for (let i = 0; i < weldedPositions.length; i++) {
+        const p = weldedPositions[i];
+        lines.push(
+            `v ${p.x.toFixed(6)} ${p.y.toFixed(6)} ${p.z.toFixed(6)}`,
+        );
+    }
+
+    let lastFaceGroup = null;
+    for (const tri of faceTriangles) {
+        if (tri.faceIndex !== lastFaceGroup) {
+            lines.push(`g face_${tri.faceIndex}`);
+            lastFaceGroup = tri.faceIndex;
+        }
+        lines.push(
+            `f ${tri.a + 1} ${tri.b + 1} ${tri.c + 1}`,
+        );
+    }
+
+    return lines.join("\n");
+}
+
+function exportOBJ() {
+    if (!f1Mesh) {
+        alert("Load a net first.");
+        return;
+    }
+    const obj = buildOBJString();
+    if (!obj) {
+        alert("Nothing to export.");
+        return;
+    }
+    const blob = new Blob([obj], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${sanitizeForFilename(currentNetName)}.obj`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
 // --- Initialization Function ---
 function init() {
     // Basic scene setup
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
+    scene.background = new THREE.Color(0x141418);
     const aspect = window.innerWidth / window.innerHeight;
     camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 1000);
     camera.position.set(0, 20, 20);
     camera.lookAt(0, 0, 0);
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.getElementById("container").appendChild(renderer.domElement);
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    setupImageBasedLighting();
+    addShadowGround();
+    ambientLight = new THREE.AmbientLight(0xffffff, 0.44);
     scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(5, 10, 7);
+    hemiLight = new THREE.HemisphereLight(0xffffff, 0x9aa0b0, 0.5);
+    hemiLight.position.set(0, 1, 0);
+    scene.add(hemiLight);
+    directionalLight = new THREE.DirectionalLight(0xffffff, 1.14);
+    directionalLight.position.set(8, 18, 10);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.set(2048, 2048);
+    directionalLight.shadow.camera.near = 1;
+    directionalLight.shadow.camera.far = 90;
+    directionalLight.shadow.camera.left = -32;
+    directionalLight.shadow.camera.right = 32;
+    directionalLight.shadow.camera.top = 32;
+    directionalLight.shadow.camera.bottom = -32;
+    directionalLight.shadow.bias = -0.0002;
+    directionalLight.shadow.normalBias = 0.02;
     scene.add(directionalLight);
+    fillLight = new THREE.DirectionalLight(0xf0f2ff, 0.4);
+    fillLight.position.set(-10, 6, -12);
+    scene.add(fillLight);
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
@@ -528,12 +700,26 @@ function init() {
     toggleNormalsCheckbox = document.getElementById("toggleNormals");
     netFileInput = document.getElementById("netFile");
     infoDisplay = document.getElementById("info");
+    exportObjButton = document.getElementById("exportObjButton");
+    darkCanvasCheckbox = document.getElementById("darkCanvas");
+    renderModeSlider = document.getElementById("renderModeSlider");
+    renderModeLabel = document.getElementById("renderModeLabel");
 
     // Initial UI setup
     speedSlider.value = currentAnimationDuration;
     speedValueSpan.textContent = `${currentAnimationDuration} ms`;
     pauseButton.disabled = true;
     toggleNormalsCheckbox.checked = false;
+    darkCanvasCheckbox.checked = true;
+    applyCanvasTheme(true);
+    if (renderModeSlider) {
+        renderModeSlider.value = String(currentRenderModeIndex);
+        renderModeSlider.addEventListener("input", (e) => {
+            applyRenderMode(Number(e.target.value));
+        });
+    }
+    if (renderModeLabel)
+        renderModeLabel.textContent = RENDER_MODE_LABELS[currentRenderModeIndex];
     infoDisplay.textContent = "Load a Net JSON File"; // Initial title
 
     // --- NO Default Net Load ---
@@ -550,7 +736,11 @@ function init() {
         "change",
         toggleNormalHelpersVisibility,
     );
+    darkCanvasCheckbox.addEventListener("change", () => {
+        applyCanvasTheme(darkCanvasCheckbox.checked);
+    });
     netFileInput.addEventListener("change", handleFileSelect);
+    exportObjButton.addEventListener("click", exportOBJ);
 
     // Start animation loop
     animate();
@@ -569,21 +759,26 @@ function loadAndProcessNet(netData) {
 
     try {
         const faceCounts = {};
-        if (!netData.baseFace?.noSides)
-            throw new Error("Invalid net data: Missing/invalid baseFace");
-        const baseSides = netData.baseFace.noSides.toString();
-        faceCounts[baseSides] = 1;
+        const baseCount = getFaceVertexCountFromSpec(netData.baseFace);
+        if (baseCount == null) {
+            throw new Error(
+                "Invalid net data: baseFace needs noSides >= 3 or vertices with length >= 3",
+            );
+        }
+        faceCounts[baseCount.toString()] = 1;
         if (!netData.connections || !Array.isArray(netData.connections))
             throw new Error(
                 "Invalid net data: Missing/invalid connections array",
             );
         netData.connections.forEach((conn, index) => {
-            if (!conn.noSides)
+            const nv = getFaceVertexCountFromSpec(conn);
+            if (nv == null) {
                 throw new Error(
-                    `Invalid connection data at index ${index}: Missing noSides`,
+                    `Invalid connection at index ${index}: need noSides >= 3 or vertices with length >= 3`,
                 );
-            const sides = conn.noSides.toString();
-            faceCounts[sides] = (faceCounts[sides] || 0) + 1;
+            }
+            const key = nv.toString();
+            faceCounts[key] = (faceCounts[key] || 0) + 1;
         });
         console.log("Detected Face Counts:", faceCounts);
 
@@ -660,8 +855,7 @@ function clearSceneGeometry() {
         if (!pivot) return;
         while (pivot.children.length > 0) {
             const child = pivot.children[0];
-            if (child.geometry) child.geometry.dispose();
-            if (child.material) child.material.dispose();
+            disposeObjectTree(child);
             pivot.remove(child);
         }
         if (pivot.parent) pivot.parent.remove(pivot);
@@ -670,13 +864,11 @@ function clearSceneGeometry() {
     if (f1Mesh) {
         while (f1Mesh.children.length > 0) {
             const child = f1Mesh.children[0];
-            if (child.geometry) child.geometry.dispose();
-            if (child.material) child.material.dispose();
+            disposeObjectTree(child);
             f1Mesh.remove(child);
         }
         scene.remove(f1Mesh);
-        f1Mesh.geometry.dispose();
-        f1Mesh.material.dispose();
+        disposeObjectTree(f1Mesh);
         f1Mesh = null;
     }
     Object.keys(allVertices).forEach((key) => delete allVertices[key]);
@@ -695,6 +887,89 @@ function clearSceneGeometry() {
 }
 
 // --- Geometry & Base Vertex Functions ---
+
+/**
+ * Vertex count for signature / validation: irregular faces use vertices.length,
+ * regular faces use noSides.
+ * @param {object} spec - baseFace or connection object
+ * @returns {number | null}
+ */
+function getFaceVertexCountFromSpec(spec) {
+    if (spec == null) return null;
+    if (Array.isArray(spec.vertices) && spec.vertices.length >= 3) {
+        return spec.vertices.length;
+    }
+    const n = spec.noSides;
+    if (typeof n === "number" && n >= 3) return n;
+    return null;
+}
+
+/**
+ * Parse net JSON vertices into THREE.Vector3 in net space.
+ * Each point is [x, z] (y = 0) or [x, y, z]. Winding should be consistent (e.g. CCW in xz when viewed from +y).
+ */
+function parseNetVerticesRaw(verticesRaw) {
+    if (!Array.isArray(verticesRaw) || verticesRaw.length < 3) {
+        throw new Error("vertices must be an array of at least 3 points.");
+    }
+    const out = [];
+    for (let i = 0; i < verticesRaw.length; i++) {
+        const p = verticesRaw[i];
+        if (!Array.isArray(p) || p.length < 2) {
+            throw new Error(`vertices[${i}] must be [x, z] or [x, y, z].`);
+        }
+        const x = Number(p[0]);
+        const y = p.length === 2 ? 0 : Number(p[1]);
+        const z = p.length === 2 ? Number(p[1]) : Number(p[2]);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            throw new Error(`vertices[${i}] contains non-finite numbers.`);
+        }
+        out.push(new THREE.Vector3(x, y, z));
+    }
+    return out;
+}
+
+/**
+ * Build face vertex ring in the flat net: either explicit irregular vertices or a regular n-gon with side length L.
+ * Irregular vertices should lie in the xz plane (y ≈ 0); folding alignment uses xz projections.
+ * Optional per-face vertexScale multiplies coordinates after parsing.
+ */
+function resolveNetFaceVertices(faceSpec, L) {
+    if (Array.isArray(faceSpec.vertices) && faceSpec.vertices.length >= 3) {
+        const verts = parseNetVerticesRaw(faceSpec.vertices);
+        const scaleRaw = faceSpec.vertexScale;
+        const scale =
+            scaleRaw != null && Number.isFinite(Number(scaleRaw))
+                ? Number(scaleRaw)
+                : 1;
+        if (scale !== 1) {
+            for (let vi = 0; vi < verts.length; vi++) {
+                verts[vi].multiplyScalar(scale);
+            }
+        }
+        let maxAbsY = 0;
+        for (let vi = 0; vi < verts.length; vi++) {
+            maxAbsY = Math.max(maxAbsY, Math.abs(verts[vi].y));
+        }
+        if (maxAbsY > 1e-4) {
+            console.warn(
+                "Net face uses non-zero y; folding math assumes the flat net lies in the xz plane (y ≈ 0).",
+            );
+        }
+        verts.numSides = verts.length;
+        return verts;
+    }
+    const n = faceSpec.noSides;
+    if (typeof n === "number" && n >= 3) {
+        const verts = calculateBaseRegularPolygonVertices(n, L);
+        verts.numSides = n;
+        return verts;
+    }
+    throw new Error(
+        "Face must define either vertices (length >= 3) or noSides (>= 3).",
+    );
+}
+
 function calculateBaseRegularPolygonVertices(numSides, sideLength) {
     const vertices = [];
     if (numSides < 3) return vertices;
@@ -735,6 +1010,238 @@ function createRegularPolygonGeometry(vertices) {
     return geometry;
 }
 
+/** Dispose geometries and materials on obj and all descendants. */
+function disposeObjectTree(obj) {
+    obj.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+            const m = o.material;
+            if (Array.isArray(m)) m.forEach((x) => x.dispose());
+            else m.dispose();
+        }
+    });
+}
+
+/**
+ * Outlines the polygon boundary (skips coplanar triangulation edges via thresholdAngle).
+ * Attached under mesh so it follows folds.
+ */
+function getOutlineEdgeColorHex() {
+    return document.documentElement.getAttribute("data-theme") === "dark"
+        ? 0xa8a8b8
+        : 0x3a3a45;
+}
+
+function addFaceOutlineEdges(mesh, geometry) {
+    const edges = new THREE.EdgesGeometry(geometry, 22);
+    const line = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({ color: getOutlineEdgeColorHex() }),
+    );
+    mesh.add(line);
+}
+
+function forEachFaceMesh(fn) {
+    if (f1Mesh?.userData?.faceColorHex != null) fn(f1Mesh);
+    Object.values(pivots).forEach((pivot) => {
+        if (!pivot) return;
+        for (let c = 0; c < pivot.children.length; c++) {
+            const child = pivot.children[c];
+            if (
+                child.isMesh &&
+                child.userData?.faceColorHex != null &&
+                child.geometry
+            ) {
+                fn(child);
+                break;
+            }
+        }
+    });
+}
+
+function createFaceMaterial(colorHex, mode) {
+    const env = scene?.environment || null;
+    switch (mode) {
+        case "wireframe":
+            return new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.1,
+                side: THREE.DoubleSide,
+                depthWrite: false,
+            });
+        case "translucent":
+            return new THREE.MeshStandardMaterial({
+                color: colorHex,
+                side: THREE.DoubleSide,
+                roughness: 0.55,
+                metalness: 0,
+                flatShading: true,
+                transparent: true,
+                opacity: TRANSLUCENT_FACE_OPACITY,
+                depthWrite: false,
+            });
+        case "rendered":
+            return new THREE.MeshPhysicalMaterial({
+                color: colorHex,
+                side: THREE.DoubleSide,
+                roughness: 0.28,
+                metalness: 0.14,
+                clearcoat: 0.45,
+                clearcoatRoughness: 0.22,
+                envMap: env,
+                envMapIntensity: 1.1,
+            });
+        case "flat":
+        default:
+            return new THREE.MeshStandardMaterial({
+                color: colorHex,
+                side: THREE.DoubleSide,
+                roughness: 0.52,
+                metalness: 0,
+                flatShading: true,
+            });
+    }
+}
+
+function disposeFaceMeshMaterial(mesh) {
+    if (mesh?.material) {
+        mesh.material.dispose();
+        mesh.material = null;
+    }
+}
+
+function syncLightingToThemeAndMode() {
+    if (!ambientLight || !hemiLight || !directionalLight || !fillLight) return;
+    const dark =
+        document.documentElement.getAttribute("data-theme") === "dark";
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    if (mode === "rendered") {
+        directionalLight.castShadow = true;
+        if (dark) {
+            ambientLight.intensity = 0.15;
+            hemiLight.intensity = 0.28;
+            directionalLight.intensity = 1.68;
+            fillLight.intensity = 0.52;
+        } else {
+            ambientLight.intensity = 0.22;
+            hemiLight.intensity = 0.36;
+            directionalLight.intensity = 1.52;
+            fillLight.intensity = 0.45;
+        }
+    } else {
+        directionalLight.castShadow = false;
+        if (dark) {
+            ambientLight.intensity = 0.44;
+            hemiLight.intensity = 0.5;
+            directionalLight.intensity = 1.14;
+            fillLight.intensity = 0.4;
+        } else {
+            ambientLight.intensity = 0.38;
+            hemiLight.intensity = 0.42;
+            directionalLight.intensity = 1.05;
+            fillLight.intensity = 0.32;
+        }
+    }
+}
+
+function updateEdgeLinesForRenderMode() {
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    const dark =
+        document.documentElement.getAttribute("data-theme") === "dark";
+    const paint = (root) => {
+        root?.traverse?.((o) => {
+            if (!o.isLineSegments || !o.material) return;
+            if (mode === "rendered") {
+                o.visible = false;
+                return;
+            }
+            o.visible = true;
+            if (mode === "wireframe") {
+                o.material.color.setHex(dark ? 0xd0d0de : 0x5a5a68);
+            } else {
+                o.material.color.setHex(getOutlineEdgeColorHex());
+            }
+            o.material.transparent = false;
+            o.material.opacity = 1;
+            o.material.needsUpdate = true;
+        });
+    };
+    paint(f1Mesh);
+    Object.values(pivots).forEach((p) => p && paint(p));
+}
+
+function applyRenderModeVisualLayers() {
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    if (renderModeSlider)
+        renderModeSlider.value = String(currentRenderModeIndex);
+    if (renderModeLabel)
+        renderModeLabel.textContent = RENDER_MODE_LABELS[currentRenderModeIndex];
+    if (shadowGround) shadowGround.visible = mode === "rendered";
+    if (renderer)
+        renderer.toneMappingExposure = mode === "rendered" ? 1.1 : 1.0;
+    syncLightingToThemeAndMode();
+    forEachFaceMesh((mesh) => {
+        mesh.castShadow = mode === "rendered";
+        mesh.receiveShadow = mode === "rendered";
+    });
+    updateEdgeLinesForRenderMode();
+}
+
+function applyRenderMode(index) {
+    currentRenderModeIndex = Math.max(0, Math.min(3, Number(index) || 0));
+    const mode = RENDER_MODES[currentRenderModeIndex];
+    forEachFaceMesh((mesh) => {
+        disposeFaceMeshMaterial(mesh);
+        mesh.material = createFaceMaterial(mesh.userData.faceColorHex, mode);
+    });
+    applyRenderModeVisualLayers();
+}
+
+function applyCanvasTheme(useDark) {
+    document.documentElement.setAttribute(
+        "data-theme",
+        useDark ? "dark" : "light",
+    );
+    if (scene)
+        scene.background = new THREE.Color(useDark ? 0x141418 : 0xffffff);
+    syncLightingToThemeAndMode();
+    updateEdgeLinesForRenderMode();
+}
+
+function setupImageBasedLighting() {
+    if (!renderer || !scene) return;
+    try {
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const roomEnv = new RoomEnvironment();
+        const rt = pmrem.fromScene(roomEnv, 0.04);
+        scene.environment = rt.texture;
+        pmrem.dispose();
+        roomEnv.traverse((o) => {
+            if (o.geometry) o.geometry.dispose();
+            if (o.material) {
+                const m = o.material;
+                if (Array.isArray(m)) m.forEach((x) => x.dispose());
+                else m.dispose();
+            }
+        });
+    } catch (e) {
+        console.warn("IBL setup failed:", e);
+    }
+}
+
+function addShadowGround() {
+    const g = new THREE.PlaneGeometry(140, 140);
+    const m = new THREE.ShadowMaterial({ opacity: 0.28 });
+    const mesh = new THREE.Mesh(g, m);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = -14;
+    mesh.receiveShadow = true;
+    mesh.visible = false;
+    scene.add(mesh);
+    shadowGround = mesh;
+}
+
 // --- Net Creation function --- Accepts netData from JSON
 function createNetFromData(netData) {
     console.log("Creating net geometry from loaded data...");
@@ -742,22 +1249,23 @@ function createNetFromData(netData) {
     clearSceneGeometry();
 
     try {
-        const baseFaceSides = netData.baseFace.noSides;
         const baseFaceColorValue = parseColor(netData.baseFace.color);
-        allVertices[1] = calculateBaseRegularPolygonVertices(baseFaceSides, L);
-        allVertices[1].numSides = baseFaceSides;
+        allVertices[1] = resolveNetFaceVertices(netData.baseFace, L);
         const baseGeom = createRegularPolygonGeometry(allVertices[1]);
         if (
             !baseGeom.attributes.position ||
             baseGeom.attributes.position.count === 0
         )
             throw new Error("Base geometry creation failed.");
-        const baseMat = new THREE.MeshStandardMaterial({
-            color: baseFaceColorValue,
-            side: THREE.DoubleSide,
-            roughness: 0.8,
-        });
-        f1Mesh = new THREE.Mesh(baseGeom, baseMat);
+        f1Mesh = new THREE.Mesh(
+            baseGeom,
+            createFaceMaterial(
+                baseFaceColorValue,
+                RENDER_MODES[currentRenderModeIndex],
+            ),
+        );
+        f1Mesh.userData.faceColorHex = baseFaceColorValue;
+        addFaceOutlineEdges(f1Mesh, baseGeom);
         scene.add(f1Mesh);
 
         const f1LocalCenter = calculateLocalCenter(allVertices[1]);
@@ -784,16 +1292,24 @@ function createNetFromData(netData) {
         for (const conn of connections) {
             const i = conn.from;
             const j = conn.to;
-            const k = conn.noSides;
             const colorInput = conn.color;
-            // Corrected Check: Allow 'to' ID (j) to be 0, but check types and minimum sides
-            if (
-                typeof i !== "number" ||
-                typeof j !== "number" ||
-                j < 0 ||
-                typeof k !== "number" ||
-                k < 3
-            ) {
+            if (typeof i !== "number" || typeof j !== "number" || j < 0) {
+                console.warn(
+                    `Skipping invalid connection definition (missing or invalid type/value):`,
+                    conn,
+                );
+                continue;
+            }
+
+            let Fi_base_vertices;
+            try {
+                Fi_base_vertices = resolveNetFaceVertices(conn, L);
+            } catch (err) {
+                console.warn(`Skipping F${i}: ${err.message}`);
+                continue;
+            }
+            const k = Fi_base_vertices.numSides;
+            if (k < 3) {
                 console.warn(
                     `Skipping invalid connection definition (missing or invalid type/value):`,
                     conn,
@@ -809,7 +1325,6 @@ function createNetFromData(netData) {
                 continue;
             }
 
-            const Fi_base_vertices = calculateBaseRegularPolygonVertices(k, L);
             const Fi_M_vertex_index = conn.fromEdge[0];
             const Fi_N_vertex_index = conn.fromEdge[1];
             if (
@@ -935,13 +1450,16 @@ function createNetFromData(netData) {
                 )
                     throw new Error(`Geometry creation failed for F${i}`);
                 const colorValue = parseColor(colorInput);
-                const material = new THREE.MeshStandardMaterial({
-                    color: colorValue,
-                    side: THREE.DoubleSide,
-                    roughness: 0.8,
-                });
-                const faceMesh = new THREE.Mesh(geometry, material);
+                const faceMesh = new THREE.Mesh(
+                    geometry,
+                    createFaceMaterial(
+                        colorValue,
+                        RENDER_MODES[currentRenderModeIndex],
+                    ),
+                );
+                faceMesh.userData.faceColorHex = colorValue;
                 faceMesh.position.set(0, 0, 0);
+                addFaceOutlineEdges(faceMesh, geometry);
                 pivot.add(faceMesh);
                 const localCenter = calculateLocalCenter(fi_localVertices);
                 const localNormal = calculateLocalNormal(fi_localVertices);
@@ -962,6 +1480,7 @@ function createNetFromData(netData) {
         if (toggleNormalsCheckbox)
             setNormalHelpersVisibility(toggleNormalsCheckbox.checked);
         else setNormalHelpersVisibility(false);
+        applyRenderModeVisualLayers();
     } catch (error) {
         console.error("Error during net creation:", error);
         alert(

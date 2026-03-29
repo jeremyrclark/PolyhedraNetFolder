@@ -1,0 +1,54 @@
+{
+  "description": "Cube net (same topology as cube-top) with an irregular quadrilateral base face",
+  "baseFace": {
+    "vertices": [
+      [0, 0],
+      [3, 0],
+      [2.7, 2.5],
+      [-0.2, 2.8]
+    ],
+    "color": "#FFD6A5"
+  },
+  "connections": [
+    {
+      "from": 2,
+      "noSides": 4,
+      "color": "#FFD6A5",
+      "fromEdge": [3, 2],
+      "to": 1,
+      "toEdge": [0, 1]
+    },
+    {
+      "from": 3,
+      "noSides": 4,
+      "color": "#FFD6A5",
+      "fromEdge": [3, 2],
+      "to": 2,
+      "toEdge": [0, 1]
+    },
+    {
+      "from": 4,
+      "noSides": 4,
+      "color": "#FFD6A5",
+      "fromEdge": [3, 2],
+      "to": 3,
+      "toEdge": [0, 1]
+    },
+    {
+      "from": 5,
+      "noSides": 4,
+      "color": "#FFD6A5",
+      "fromEdge": [0, 3],
+      "to": 3,
+      "toEdge": [1, 2]
+    },
+    {
+      "from": 6,
+      "noSides": 4,
+      "color": "#FFD6A5",
+      "fromEdge": [2, 1],
+      "to": 3,
+      "toEdge": [3, 0]
+    }
+  ]
+}

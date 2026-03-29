@@ -1,44 +1,277 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <link rel="manifest" href="manifest.json">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Folding Polyhedron Net</title> <style>
-        body { margin: 0; font-family: sans-serif; background-color: #f0f0f0; overflow: hidden; }
+    <title>Folding Polyhedron Net</title>
+    <style>
+        :root[data-theme="light"] {
+            color-scheme: light;
+            --page-bg: #e4e4e8;
+            --panel-bg: rgba(255, 255, 255, 0.92);
+            --panel-border: rgba(0, 0, 0, 0.08);
+            --panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+            --text: #1a1a1f;
+            --text-muted: #5c5c66;
+            --section-label: #6a6a75;
+            --input-bg: #fff;
+            --input-border: #c8c8d0;
+            --button-bg: #f2f2f5;
+            --button-border: #c4c4cc;
+            --button-hover: #e8e8ee;
+            --button-primary-bg: #2d4a7c;
+            --button-primary-border: #243d66;
+            --button-primary-hover: #355891;
+            --button-primary-text: #f5f7fc;
+            --focus-ring: #4a7bc8;
+        }
+
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --page-bg: #0d0d10;
+            --panel-bg: rgba(24, 24, 30, 0.94);
+            --panel-border: rgba(255, 255, 255, 0.07);
+            --panel-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+            --text: #ececf0;
+            --text-muted: #a0a0ae;
+            --section-label: #8c8c9a;
+            --input-bg: #222228;
+            --input-border: #3a3a44;
+            --button-bg: #2c2c34;
+            --button-border: #45454f;
+            --button-hover: #36363f;
+            --button-primary-bg: #4a6fa8;
+            --button-primary-border: #5a7fb8;
+            --button-primary-hover: #5a7fc0;
+            --button-primary-text: #f8f9fc;
+            --focus-ring: #7aa3e0;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+            background-color: var(--page-bg);
+            color: var(--text);
+            overflow: hidden;
+            transition: background-color 0.25s ease;
+        }
+
         canvas { display: block; }
-        #info { position: absolute; top: 10px; width: 100%; text-align: center; z-index: 99; display: block; color: #333; padding-bottom: 30px; pointer-events: none; }
+
+        #info {
+            position: absolute;
+            bottom: 14px;
+            left: 12px;
+            right: auto;
+            max-width: min(280px, calc(100vw - 24px));
+            text-align: left;
+            z-index: 99;
+            pointer-events: none;
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 0.03em;
+            line-height: 1.35;
+            color: var(--text-muted);
+            text-shadow: 0 1px 2px var(--page-bg);
+            padding: 0;
+        }
+
         #controls {
             position: absolute;
-            top: 50px; /* Lowered */
-            left: 10px;
+            top: 12px;
+            left: 12px;
             z-index: 100;
-            background-color: rgba(255, 255, 255, 0.8);
-            padding: 10px;
-            border-radius: 5px;
-            /* Arrange controls vertically */
+            width: min(252px, calc(100vw - 24px));
+            padding: 11px 11px 10px;
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            box-shadow: var(--panel-shadow);
             display: flex;
             flex-direction: column;
-            align-items: flex-start; /* Align items to the start (left) */
-            gap: 10px; /* Adjust gap */
+            gap: 11px;
+            backdrop-filter: blur(10px);
+            transition: background 0.25s ease, border-color 0.25s ease;
         }
-        /* Style group divs */
-        #controls > div {
+
+        .control-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .control-section + .control-section {
+            padding-top: 10px;
+            border-top: 1px solid var(--panel-border);
+        }
+
+        .section-title {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--section-label);
+            margin: 0 0 2px 0;
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .row.tight { gap: 6px; }
+
+        .row.fill select,
+        .row.fill input[type="file"] {
+            width: 100%;
+            min-width: 0;
+        }
+
+        button {
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            border-radius: 5px;
+            border: 1px solid var(--button-border);
+            background: var(--button-bg);
+            color: var(--text);
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--button-hover);
+        }
+
+        button:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        button.primary {
+            background: var(--button-primary-bg);
+            border-color: var(--button-primary-border);
+            color: var(--button-primary-text);
+        }
+
+        button.primary:hover:not(:disabled) {
+            background: var(--button-primary-hover);
+        }
+
+        label {
+            font-size: 12px;
+            user-select: none;
+            color: var(--text);
+        }
+
+        .check-row {
             display: flex;
             align-items: center;
-            gap: 10px; /* Gap within groups */
-            width: 100%; /* Make groups take full width */
-            justify-content: flex-start; /* Align content start */
+            gap: 6px;
+            min-height: 24px;
         }
-        button { padding: 5px 15px; font-size: 14px; cursor: pointer; }
-        label { font-size: 14px; user-select: none; white-space: nowrap; }
-        input[type="range"] { width: 150px; vertical-align: middle; }
-        input[type="checkbox"] { vertical-align: middle; margin-right: 5px; }
-        input[type="file"] { font-size: 12px; }
-        #speedValue { font-size: 14px; min-width: 40px; text-align: right; }
-        /* Style file input container */
-        #file-input-container label {
-             margin-right: 5px;
+
+        .check-row input[type="checkbox"] {
+            width: 14px;
+            height: 14px;
+            accent-color: var(--button-primary-bg);
+            cursor: pointer;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            min-width: 80px;
+            accent-color: var(--button-primary-bg);
+        }
+
+        #speedValue {
+            font-size: 11px;
+            min-width: 40px;
+            text-align: right;
+            color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        select {
+            width: 100%;
+            padding: 4px 8px;
+            font-size: 11px;
+            border-radius: 5px;
+            border: 1px solid var(--input-border);
+            background: var(--input-bg);
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        select:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 1px;
+        }
+
+        input[type="file"] {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        input[type="file"]::file-selector-button {
+            margin-right: 6px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            border: 1px solid var(--button-border);
+            background: var(--button-bg);
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        input[type="file"]::file-selector-button:hover {
+            background: var(--button-hover);
+        }
+
+        .render-mode-block {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            width: 100%;
+        }
+
+        .render-mode-block label[for="renderModeSlider"] {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        #renderModeSlider {
+            width: 100%;
+        }
+
+        .render-mode-stops {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 2px;
+            font-size: 9px;
+            line-height: 1.2;
+            color: var(--text-muted);
+            text-align: center;
+            user-select: none;
+        }
+
+        #renderModeLabel {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text);
+            text-align: center;
+            margin-top: 2px;
         }
     </style>
 </head>
@@ -47,45 +280,97 @@
     <div id="container"></div>
 
     <div id="controls">
-        <div>
-            <button id="foldButton">Fold</button>
-            <button id="pauseButton" disabled>Pause</button>
-        </div>
-        <div>
-            <label for="speedSlider">Speed:</label>
-            <input type="range" id="speedSlider" min="200" max="4000" value="500" step="100"> <span id="speedValue">500 ms</span>
-        </div>
-        <div>
-            <input type="checkbox" id="toggleNormals" name="toggleNormals"> <label for="toggleNormals">Show Normals</label>
-        </div>
-        <div id="file-input-container">
-            <label for="netFile">Load Net:</label>
-            <input type="file" id="netFile" accept=".json">
-        </div>
-	<div id="preset-net-container">
-          <label for="presetNets">Preset Nets:</label>
-          <select id="presetNets">
-            <option value="">Select a preset net</option>
-            <option value="tetrahedron-top">Tetrahedron</option>
-            <option value="cube-top">Cube</option>
-            <option value="octahedron-top">Octahedron</option>
-            <option value="dodecahedron-top">Dodecahedron</option>
-            <option value="icosahedron-top">Icosahedron</option>
-            <option value="cuboctahedron-top">Cuboctahedron</option>
-            <option value="rhombicuboctahedron-top">Rhombicuboctahedron</option>
-            <option value="icosidodecahedron-top">Icosidodecahedron</option>
-            <option value="truncated-tetrahedron-top">Truncated Tetrahedron</option>
-            <option value="truncated-cube-top">Truncated Cube</option>
-            <option value="truncated-octahedron-top">Truncated Octahedron</option>
-            <option value="truncated-cuboctahedron-top">Truncated Cuboctahedron</option>
-            <option value="truncated-dodecahedron-top">Truncated Dodecahedron</option>
-            <option value="truncated-icosahedron-top">Truncated Icosahedron</option>
-            <option value="truncated-icosidodecahedron-top">Great Rhombicosidodecahedron or Truncated Icosidodecahedron</option>
-            <option value="small-rhombicosidodecahedron-top">Small Rhombicosidodecahedron</option>
-            <option value="snub-cube-top">Snub Cube</option>
-            <option value="snub-dodecahedron-top">Snub Dodecahedron</option>
+        <section class="control-section" aria-labelledby="sec-animation">
+            <h2 class="section-title" id="sec-animation">Animation</h2>
+            <div class="row">
+                <button type="button" id="foldButton" class="primary">Fold</button>
+                <button type="button" id="pauseButton" disabled>Pause</button>
+            </div>
+            <div class="row tight">
+                <label for="speedSlider">Speed</label>
+                <input type="range" id="speedSlider" min="200" max="4000" value="500" step="100">
+                <span id="speedValue">500 ms</span>
+            </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="sec-look">
+            <h2 class="section-title" id="sec-look">Appearance</h2>
+            <div class="check-row">
+                <input type="checkbox" id="darkCanvas" name="darkCanvas" checked>
+                <label for="darkCanvas">Dark background</label>
+            </div>
+            <div class="check-row">
+                <input type="checkbox" id="toggleNormals" name="toggleNormals">
+                <label for="toggleNormals">Show face normals</label>
+            </div>
+            <div class="render-mode-block">
+                <label for="renderModeSlider">Shading</label>
+                <input type="range" id="renderModeSlider" min="0" max="3" value="2" step="1"
+                    aria-valuemin="0" aria-valuemax="3" aria-valuenow="2"
+                    aria-label="Shading mode">
+                <div class="render-mode-stops">
+                    <span>Wire</span>
+                    <span>Glass</span>
+                    <span>Flat</span>
+                    <span>Render</span>
+                </div>
+                <div id="renderModeLabel">Flat</div>
+            </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="sec-net">
+            <h2 class="section-title" id="sec-net">Net</h2>
+            <div class="row fill">
+                <select id="presetNets" aria-label="Preset nets">
+            <option value="">Choose a preset net…</option>
+            <optgroup label="Platonic solids">
+              <option value="tetrahedron-top">Tetrahedron</option>
+              <option value="cube-top">Cube</option>
+              <option value="octahedron-top">Octahedron</option>
+              <option value="dodecahedron-top">Dodecahedron</option>
+              <option value="icosahedron-top">Icosahedron</option>
+            </optgroup>
+            <optgroup label="Demos">
+              <option value="cube-irregular-base-top">Cube (irregular base quad)</option>
+            </optgroup>
+            <optgroup label="Catalan solids">
+              <option value="rhombic-dodecahedron-net">Rhombic Dodecahedron</option>
+            </optgroup>
+            <optgroup label="Archimedean — quasi-regular">
+              <option value="cuboctahedron-top">Cuboctahedron</option>
+              <option value="icosidodecahedron-top">Icosidodecahedron</option>
+            </optgroup>
+            <optgroup label="Archimedean — truncated">
+              <option value="truncated-tetrahedron-top">Truncated Tetrahedron</option>
+              <option value="truncated-cube-top">Truncated Cube</option>
+              <option value="truncated-octahedron-top">Truncated Octahedron</option>
+              <option value="truncated-dodecahedron-top">Truncated Dodecahedron</option>
+              <option value="truncated-icosahedron-top">Truncated Icosahedron</option>
+            </optgroup>
+            <optgroup label="Archimedean — expanded / rhombic">
+              <option value="rhombicuboctahedron-top">Rhombicuboctahedron</option>
+              <option value="truncated-cuboctahedron-top">Truncated Cuboctahedron</option>
+              <option value="truncated-icosidodecahedron-top">Great Rhombicosidodecahedron</option>
+              <option value="small-rhombicosidodecahedron-top">Small Rhombicosidodecahedron</option>
+            </optgroup>
+            <optgroup label="Archimedean — snub">
+              <option value="snub-cube-top">Snub Cube</option>
+              <option value="snub-dodecahedron-top">Snub Dodecahedron</option>
+            </optgroup>
           </select>
-	</div>
+            </div>
+            <div class="row fill tight">
+                <label for="netFile">JSON file</label>
+                <input type="file" id="netFile" accept=".json">
+            </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="sec-export">
+            <h2 class="section-title" id="sec-export">Export</h2>
+            <div class="row">
+                <button type="button" id="exportObjButton">Export OBJ</button>
+            </div>
+        </section>
     </div>
     <script type="importmap">
         {
@@ -97,10 +382,10 @@
     </script>
 
     <script type="module" src="script.js"></script>
-    
+
     <script>
       if ('serviceWorker' in navigator) {
-	  navigator.serviceWorker.register('service-worker.js');
+          navigator.serviceWorker.register('service-worker.js');
       }
     </script>
 </body>
