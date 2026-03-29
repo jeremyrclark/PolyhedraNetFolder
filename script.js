@@ -7,6 +7,7 @@ console.log(
 import * as THREE from "three";
 import { OrbitControls } from "./js/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import * as NetBuilder from "./net-builder.js";
 
 // --- Global Variables ---
 let scene;
@@ -52,6 +53,32 @@ let hemiLight;
 let directionalLight;
 let fillLight;
 let shadowGround = null;
+
+/** Net builder: interactive CREATE mode */
+let edgePickGroup = null;
+let isNetBuilderActive = false;
+let netBuilderAttachMode = false;
+let builderNetData = null;
+const builderUsedEdgeKeys = new Set();
+let builderHoveredPick = null;
+let builderPendingEdge = null;
+const pointerNDC = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+let builderHintEl = null;
+let createKindSelect;
+let createRegularSides;
+let createSchlafliSelect;
+let createIrregularSelect;
+let createSvgTextarea;
+let createColorInput;
+let builderPanelEl;
+let builderAttachToggle;
+let builderAttachPanel;
+let attachNewFaceKind;
+let attachRegularSides;
+let attachIrregularSelect;
+let attachColorInput;
+let savePresetNameInput;
 
 const RENDER_MODES = ["wireframe", "translucent", "flat", "rendered"];
 const RENDER_MODE_LABELS = ["Wireframe", "Translucent", "Flat", "Rendered"];
@@ -645,6 +672,50 @@ function exportOBJ() {
     URL.revokeObjectURL(url);
 }
 
+/**
+ * XYZ crosshairs: full lines through the origin (±size per axis).
+ * Vertex colors match Three.js AxesHelper (red / green / blue with slight gradient along +half).
+ */
+function createCrosshairAxesHelper(size = 5) {
+    const L = size;
+    const positions = new Float32Array([
+        -L,
+        0,
+        0,
+        L,
+        0,
+        0,
+        0,
+        -L,
+        0,
+        0,
+        L,
+        0,
+        0,
+        0,
+        -L,
+        0,
+        0,
+        L,
+    ]);
+    const colors = new Float32Array([
+        1, 0, 0, 1, 0.6, 0, 0, 1, 0, 0.6, 1, 0, 0, 0, 1, 0, 0.6, 1,
+    ]);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(positions, 3),
+    );
+    geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    const mat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        toneMapped: false,
+    });
+    const lines = new THREE.LineSegments(geom, mat);
+    lines.name = "crosshairAxesHelper";
+    return lines;
+}
+
 // --- Initialization Function ---
 function init() {
     // Basic scene setup
@@ -689,8 +760,10 @@ function init() {
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.target.set(0, 0, 0);
-    const axesHelper = new THREE.AxesHelper(5);
-    scene.add(axesHelper);
+    scene.add(createCrosshairAxesHelper(5));
+    edgePickGroup = new THREE.Group();
+    edgePickGroup.name = "edgePickGroup";
+    scene.add(edgePickGroup);
 
     // Get DOM Elements
     foldButton = document.getElementById("foldButton");
@@ -742,13 +815,264 @@ function init() {
     netFileInput.addEventListener("change", handleFileSelect);
     exportObjButton.addEventListener("click", exportOBJ);
 
+    builderHintEl = document.getElementById("builderEdgeHint");
+    createKindSelect = document.getElementById("createKindSelect");
+    createRegularSides = document.getElementById("createRegularSides");
+    createSchlafliSelect = document.getElementById("createSchlafliSelect");
+    createIrregularSelect = document.getElementById("createIrregularSelect");
+    createSvgTextarea = document.getElementById("createSvgTextarea");
+    createColorInput = document.getElementById("createColorInput");
+    builderPanelEl = document.getElementById("builderPanel");
+    builderAttachToggle = document.getElementById("builderAttachToggle");
+    builderAttachPanel = document.getElementById("builderAttachPanel");
+    attachNewFaceKind = document.getElementById("attachNewFaceKind");
+    attachRegularSides = document.getElementById("attachRegularSides");
+    attachIrregularSelect = document.getElementById("attachIrregularSelect");
+    attachColorInput = document.getElementById("attachColorInput");
+    savePresetNameInput = document.getElementById("savePresetNameInput");
+
+    if (createSchlafliSelect) {
+        createSchlafliSelect.innerHTML = "";
+        for (const sym of Object.keys(NetBuilder.SCHLAFLI_BASE_SIDES)) {
+            const opt = document.createElement("option");
+            opt.value = sym;
+            opt.textContent = sym;
+            createSchlafliSelect.appendChild(opt);
+        }
+    }
+    if (createIrregularSelect) {
+        createIrregularSelect.innerHTML = "";
+        for (const key of Object.keys(NetBuilder.IRREGULAR_POLYGON_LIBRARY)) {
+            const item = NetBuilder.IRREGULAR_POLYGON_LIBRARY[key];
+            const opt = document.createElement("option");
+            opt.value = key;
+            opt.textContent = item.name;
+            createIrregularSelect.appendChild(opt);
+        }
+    }
+    if (attachIrregularSelect) {
+        attachIrregularSelect.innerHTML = "";
+        for (const key of Object.keys(NetBuilder.IRREGULAR_POLYGON_LIBRARY)) {
+            const item = NetBuilder.IRREGULAR_POLYGON_LIBRARY[key];
+            const opt = document.createElement("option");
+            opt.value = key;
+            opt.textContent = item.name;
+            attachIrregularSelect.appendChild(opt);
+        }
+    }
+
+    function syncCreateSubpanels() {
+        const k = createKindSelect?.value || "regular";
+        document.getElementById("createRowRegular")?.toggleAttribute(
+            "hidden",
+            k !== "regular",
+        );
+        document.getElementById("createRowSchlafli")?.toggleAttribute(
+            "hidden",
+            k !== "schlafli",
+        );
+        document.getElementById("createRowIrregular")?.toggleAttribute(
+            "hidden",
+            k !== "irregular",
+        );
+        document.getElementById("createRowSvg")?.toggleAttribute(
+            "hidden",
+            k !== "svg",
+        );
+    }
+    createKindSelect?.addEventListener("change", syncCreateSubpanels);
+    syncCreateSubpanels();
+
+    document.getElementById("createNetBtn")?.addEventListener("click", () => {
+        try {
+            const color = createColorInput?.value || "#c9b8e8";
+            const kind = createKindSelect?.value || "regular";
+            let data;
+            if (kind === "regular") {
+                const n = parseInt(createRegularSides?.value || "4", 10);
+                data = NetBuilder.buildStarterNet({
+                    kind: "regular",
+                    schlafliKey: String(n),
+                    color,
+                });
+            } else if (kind === "schlafli") {
+                data = NetBuilder.buildStarterNet({
+                    kind: "schlafli",
+                    schlafliKey: createSchlafliSelect?.value || "{4,3}",
+                    color,
+                });
+            } else if (kind === "irregular") {
+                data = NetBuilder.buildStarterNet({
+                    kind: "irregular",
+                    irregularKey: createIrregularSelect?.value || "kite_quad",
+                    color,
+                });
+            } else if (kind === "svg") {
+                const verts = NetBuilder.parseSvgPolygonToNetVertices(
+                    createSvgTextarea?.value || "",
+                );
+                if (!verts)
+                    throw new Error(
+                        "Could not parse SVG (use <polygon points=\"...\"> or a simple closed <path d=\"M...Z\">).",
+                    );
+                data = {
+                    description: "Custom net (from SVG)",
+                    baseFace: { vertices: verts, color },
+                    connections: [],
+                };
+            }
+            enterNetBuilderFromData(data);
+        } catch (err) {
+            alert(err.message || String(err));
+        }
+    });
+
+    document.getElementById("exitBuilderBtn")?.addEventListener("click", () => {
+        exitNetBuilder();
+        clearSceneGeometry();
+        if (infoDisplay) infoDisplay.textContent = "Load a Net JSON File";
+        currentFoldAngles = null;
+    });
+
+    builderAttachToggle?.addEventListener("change", () => {
+        netBuilderAttachMode = Boolean(builderAttachToggle.checked);
+        if (controls) controls.enabled = !netBuilderAttachMode;
+        rebuildEdgePickMeshes();
+        if (!netBuilderAttachMode) {
+            builderPendingEdge = null;
+            if (builderAttachPanel) builderAttachPanel.hidden = true;
+            setBuilderHintVisible(false, 0, 0);
+        }
+    });
+
+    attachNewFaceKind?.addEventListener("change", () => {
+        const v = attachNewFaceKind.value;
+        document
+            .getElementById("attachRowRegular")
+            ?.toggleAttribute("hidden", v !== "regular");
+        document
+            .getElementById("attachRowIrregular")
+            ?.toggleAttribute("hidden", v !== "irregular");
+    });
+    attachNewFaceKind?.dispatchEvent(new Event("change"));
+
+    document.getElementById("attachConfirmBtn")?.addEventListener("click", () => {
+        if (!builderPendingEdge || !builderNetData) return;
+        const color = attachColorInput?.value || "#b8a9d9";
+        let spec;
+        if (attachNewFaceKind?.value === "irregular") {
+            const key = attachIrregularSelect?.value;
+            const lib = NetBuilder.IRREGULAR_POLYGON_LIBRARY[key];
+            if (!lib) return;
+            spec = { vertices: lib.vertices.map((p) => [...p]) };
+        } else {
+            const n = parseInt(attachRegularSides?.value || "4", 10);
+            if (n < 3 || n > 12) {
+                alert("New face sides must be 3–12.");
+                return;
+            }
+            spec = { noSides: n };
+        }
+        try {
+            const fid = builderPendingEdge.faceId;
+            const pVerts = allVertices[fid];
+            const ia = builderPendingEdge.v0;
+            const ib = builderPendingEdge.v1;
+            if (
+                !pVerts ||
+                !pVerts[ia] ||
+                !pVerts[ib] ||
+                !(pVerts[ia] instanceof THREE.Vector3)
+            ) {
+                alert(
+                    "Could not measure the clicked edge. Load the net again or exit and re-enter the builder.",
+                );
+                return;
+            }
+            const hingeLen = pVerts[ia].distanceTo(pVerts[ib]);
+            if (hingeLen < 1e-6) {
+                alert("That edge is too short to attach to.");
+                return;
+            }
+            const { connection } = NetBuilder.appendFlapToNet(
+                builderNetData,
+                {
+                    parentFaceId: fid,
+                    v0: ia,
+                    v1: ib,
+                },
+                spec,
+                color,
+                {
+                    hingeMatchLength: hingeLen,
+                    referenceSideLength: sideLength,
+                },
+            );
+            builderNetData.connections.push(connection);
+            builderPendingEdge = null;
+            if (builderAttachPanel) builderAttachPanel.hidden = true;
+            hydrateUsedEdgesFromNet(builderNetData);
+            loadAndProcessNet(builderNetData, {
+                allowUnknownSignature: true,
+            });
+        } catch (err) {
+            alert(err.message || String(err));
+        }
+    });
+
+    document.getElementById("attachCancelBtn")?.addEventListener("click", () => {
+        builderPendingEdge = null;
+        if (builderAttachPanel) builderAttachPanel.hidden = true;
+    });
+
+    document.getElementById("savePresetBtn")?.addEventListener("click", () => {
+        const name = (savePresetNameInput?.value || "").trim();
+        if (!name) {
+            alert("Enter a name for this net.");
+            return;
+        }
+        if (!builderNetData) {
+            alert("Create or load a net in the builder first.");
+            return;
+        }
+        const presets = NetBuilder.loadCustomPresetsFromStorage();
+        presets.push({
+            id: NetBuilder.makePresetId(),
+            name,
+            netData: JSON.parse(JSON.stringify(builderNetData)),
+            savedAt: Date.now(),
+        });
+        NetBuilder.saveCustomPresetsToStorage(presets);
+        savePresetNameInput.value = "";
+        refreshCustomPresetsInSelect();
+    });
+
+    renderer.domElement.addEventListener("mousemove", (ev) => {
+        updateBuilderPickHover(ev.clientX, ev.clientY);
+    });
+    renderer.domElement.addEventListener("mouseleave", () => {
+        updateBuilderPickHover(-1e9, -1e9);
+    });
+    renderer.domElement.addEventListener("click", (ev) => {
+        if (!isNetBuilderActive || !netBuilderAttachMode) return;
+        if (!builderHoveredPick?.userData?.pick) return;
+        const p = builderHoveredPick.userData.pick;
+        builderPendingEdge = p;
+        const info = document.getElementById("attachEdgeInfo");
+        if (info)
+            info.textContent = `Face ${p.faceId} · vertices ${p.v0}–${p.v1}`;
+        if (builderAttachPanel) builderAttachPanel.hidden = false;
+    });
+
+    refreshCustomPresetsInSelect();
+
     // Start animation loop
     animate();
 }
 
 // --- Function to Load Net Data from JSON ---
-function loadAndProcessNet(netData) {
-    // Accepts parsed data object
+function loadAndProcessNet(netData, options = {}) {
+    const allowUnknownSignature = options.allowUnknownSignature === true;
     console.log(`Processing net: ${netData.description || "Unnamed Net"}`);
     isFolded = false;
     isAnimating = false;
@@ -785,28 +1109,40 @@ function loadAndProcessNet(netData) {
         const signature = getFaceCountSignature(faceCounts);
         console.log("Generated Signature:", signature);
         const vertexConfigKey = faceCountSigToVertexConfigKey[signature];
-        if (!vertexConfigKey)
-            throw new Error(
-                `Unknown polyhedron signature: ${signature}. Add data to POLYHEDRON_DATA.`,
+        if (!vertexConfigKey) {
+            if (!allowUnknownSignature) {
+                throw new Error(
+                    `Unknown polyhedron signature: ${signature}. This pattern is not in the fold-angle library yet.`,
+                );
+            }
+            console.warn(
+                `[Custom net] Signature "${signature}" has no fold table — layout only; folding disabled.`,
             );
-        console.log("Matched Vertex Configuration:", vertexConfigKey);
-
-        const polyhedronInfo = POLYHEDRON_DATA[vertexConfigKey];
-        if (!polyhedronInfo?.foldAngles)
-            throw new Error(
-                `Fold angle data not found for config: ${vertexConfigKey}`,
-            );
-        currentFoldAngles = polyhedronInfo.foldAngles;
-        currentNetName =
-            polyhedronInfo.name || netData.description || "Loaded Net";
-        console.log("Using Fold Angles:", currentFoldAngles);
+            currentFoldAngles = null;
+            currentNetName = netData.description || "Custom net";
+        } else {
+            console.log("Matched Vertex Configuration:", vertexConfigKey);
+            const polyhedronInfo = POLYHEDRON_DATA[vertexConfigKey];
+            if (!polyhedronInfo?.foldAngles)
+                throw new Error(
+                    `Fold angle data not found for config: ${vertexConfigKey}`,
+                );
+            currentFoldAngles = polyhedronInfo.foldAngles;
+            currentNetName =
+                polyhedronInfo.name || netData.description || "Loaded Net";
+            console.log("Using Fold Angles:", currentFoldAngles);
+        }
 
         NUM_ANIMATION_STAGES = netData.connections.length;
         console.log(`Set NUM_ANIMATION_STAGES to: ${NUM_ANIMATION_STAGES}`);
 
-        createNetFromData(netData); // Create geometry
+        createNetFromData(netData);
 
-        if (infoDisplay) infoDisplay.textContent = `Folding: ${currentNetName}`;
+        if (infoDisplay) {
+            infoDisplay.textContent = currentFoldAngles
+                ? `Folding: ${currentNetName}`
+                : `Layout: ${currentNetName} · folding unavailable`;
+        }
     } catch (error) {
         console.error("Failed to process net data:", error);
         alert(`Error processing net data: ${error.message}. Check console.`);
@@ -831,6 +1167,7 @@ function handleFileSelect(event) {
         try {
             const netData = JSON.parse(e.target.result);
             console.log(`Processing loaded file: ${file.name}`);
+            exitNetBuilder();
             loadAndProcessNet(netData);
         } catch (error) {
             console.error("Error parsing JSON file:", error);
@@ -873,6 +1210,14 @@ function clearSceneGeometry() {
     }
     Object.keys(allVertices).forEach((key) => delete allVertices[key]);
     Object.keys(normalHelpers).forEach((key) => delete normalHelpers[key]);
+    if (edgePickGroup) {
+        while (edgePickGroup.children.length > 0) {
+            const c = edgePickGroup.children[0];
+            disposeObjectTree(c);
+            edgePickGroup.remove(c);
+        }
+    }
+    builderHoveredPick = null;
     // Reset animation state variables
     isFolded = false;
     isAnimating = false;
@@ -963,6 +1308,16 @@ function resolveNetFaceVertices(faceSpec, L) {
     if (typeof n === "number" && n >= 3) {
         const verts = calculateBaseRegularPolygonVertices(n, L);
         verts.numSides = n;
+        const scaleRaw = faceSpec.vertexScale;
+        const scale =
+            scaleRaw != null && Number.isFinite(Number(scaleRaw))
+                ? Number(scaleRaw)
+                : 1;
+        if (scale !== 1) {
+            for (let vi = 0; vi < verts.length; vi++) {
+                verts[vi].multiplyScalar(scale);
+            }
+        }
         return verts;
     }
     throw new Error(
@@ -989,6 +1344,103 @@ function calculateBaseRegularPolygonVertices(numSides, sideLength) {
         );
     }
     return vertices;
+}
+
+/** 2D cross (ax,az) × (bx,bz) — positive means b is to the left of a in xz (CCW from +y). */
+function crossXZ(ax, az, bx, bz) {
+    return ax * bz - az * bx;
+}
+
+/**
+ * Reflect polygon vertices in the xz plane across the line through r and s (y unchanged).
+ * Points on the line stay fixed — correct for hinge edges after placement.
+ */
+function reflectNetFaceAcrossEdgeXZ(vertices, r, s) {
+    const mx = (r.x + s.x) * 0.5;
+    const mz = (r.z + s.z) * 0.5;
+    let ux = s.x - r.x;
+    let uz = s.z - r.z;
+    const len = Math.hypot(ux, uz);
+    if (len < 1e-9) return;
+    ux /= len;
+    uz /= len;
+    for (let vi = 0; vi < vertices.length; vi++) {
+        const v = vertices[vi];
+        const vx = v.x - mx;
+        const vz = v.z - mz;
+        const along = vx * ux + vz * uz;
+        const px = mx + along * ux;
+        const pz = mz + along * uz;
+        v.x = 2 * px - v.x;
+        v.z = 2 * pz - v.z;
+    }
+}
+
+/**
+ * Signed side of point (px,pz) relative to directed edge r→s in xz (interior of CCW polygons is positive).
+ */
+function sideOfEdgeXZ(px, pz, r, vx, vz) {
+    return crossXZ(vx, vz, px - r.x, pz - r.z);
+}
+
+/**
+ * If the new face lies on the same side of the hinge as the parent interior, mirror it across the hinge
+ * so the flap opens into the exterior (fixes e.g. triangle-on-triangle with fromEdge [0,1]).
+ */
+function unfoldFlipFlapIfOverlappingParent(
+    flapVertices,
+    k,
+    parentVertices,
+    parentNumSides,
+    rIdx,
+    sIdx,
+    Fr,
+    Fs,
+) {
+    const Vx = Fs.x - Fr.x;
+    const Vz = Fs.z - Fr.z;
+    if (Vx * Vx + Vz * Vz < 1e-12) return;
+
+    let pcx = 0;
+    let pcz = 0;
+    for (let vi = 0; vi < parentNumSides; vi++) {
+        pcx += parentVertices[vi].x;
+        pcz += parentVertices[vi].z;
+    }
+    pcx /= parentNumSides;
+    pcz /= parentNumSides;
+    let parentSide = sideOfEdgeXZ(pcx, pcz, Fr, Vx, Vz);
+    if (Math.abs(parentSide) < 1e-8) {
+        for (let vi = 0; vi < parentNumSides; vi++) {
+            if (vi === rIdx || vi === sIdx) continue;
+            parentSide = sideOfEdgeXZ(
+                parentVertices[vi].x,
+                parentVertices[vi].z,
+                Fr,
+                Vx,
+                Vz,
+            );
+            break;
+        }
+    }
+
+    let ncx = 0;
+    let ncz = 0;
+    for (let vi = 0; vi < k; vi++) {
+        ncx += flapVertices[vi].x;
+        ncz += flapVertices[vi].z;
+    }
+    ncx /= k;
+    ncz /= k;
+    const newSide = sideOfEdgeXZ(ncx, ncz, Fr, Vx, Vz);
+
+    if (
+        Math.abs(parentSide) >= 1e-8 &&
+        Math.abs(newSide) >= 1e-8 &&
+        parentSide * newSide > 0
+    ) {
+        reflectNetFaceAcrossEdgeXZ(flapVertices, Fr, Fs);
+    }
 }
 
 function createRegularPolygonGeometry(vertices) {
@@ -1392,6 +1844,17 @@ function createNetFromData(netData) {
                 v.clone().add(Q),
             );
 
+            unfoldFlipFlapIfOverlappingParent(
+                Fi_final_world_vertices,
+                k,
+                parentVertices,
+                parentNumSides,
+                Fj_R_vertex_index,
+                Fj_S_vertex_index,
+                Fj_R_vertex,
+                Fj_S_vertex,
+            );
+
             allVertices[i] = Fi_final_world_vertices;
             allVertices[i].numSides = k;
             allVertices[i].conn = {
@@ -1481,6 +1944,7 @@ function createNetFromData(netData) {
             setNormalHelpersVisibility(toggleNormalsCheckbox.checked);
         else setNormalHelpersVisibility(false);
         applyRenderModeVisualLayers();
+        if (isNetBuilderActive) rebuildEdgePickMeshes();
     } catch (error) {
         console.error("Error during net creation:", error);
         alert(
@@ -1488,6 +1952,158 @@ function createNetFromData(netData) {
         );
         clearSceneGeometry();
     }
+}
+
+function makeEdgePickMesh(a, b, userData) {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const len = dir.length();
+    if (len < 1e-6) return null;
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    const geom = new THREE.CylinderGeometry(0.1, 0.1, len, 6);
+    const mat = new THREE.MeshBasicMaterial({
+        color: 0x66eeaa,
+        transparent: true,
+        opacity: 0.06,
+        depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.copy(mid);
+    mesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        dir.clone().normalize(),
+    );
+    mesh.userData.pick = userData;
+    mesh.renderOrder = 900;
+    return mesh;
+}
+
+function clearEdgePickGroup() {
+    if (!edgePickGroup) return;
+    while (edgePickGroup.children.length > 0) {
+        const c = edgePickGroup.children[0];
+        disposeObjectTree(c);
+        edgePickGroup.remove(c);
+    }
+}
+
+function rebuildEdgePickMeshes() {
+    clearEdgePickGroup();
+    if (!edgePickGroup || !isNetBuilderActive) return;
+    for (const faceKey of Object.keys(allVertices)) {
+        const faceId = parseInt(faceKey, 10);
+        if (Number.isNaN(faceId)) continue;
+        const verts = allVertices[faceKey];
+        if (!verts || verts.length < 3) continue;
+        const n = verts.numSides || verts.length;
+        for (let i = 0; i < n; i++) {
+            const v0 = i;
+            const v1 = (i + 1) % n;
+            const key = NetBuilder.edgeKey(faceId, v0, v1);
+            if (builderUsedEdgeKeys.has(key)) continue;
+            const a = verts[v0];
+            const b = verts[v1];
+            if (!(a instanceof THREE.Vector3) || !(b instanceof THREE.Vector3))
+                continue;
+            const mesh = makeEdgePickMesh(a, b, { faceId, v0, v1, key });
+            if (mesh) edgePickGroup.add(mesh);
+        }
+    }
+}
+
+function setBuilderHintVisible(show, x, y) {
+    if (!builderHintEl) return;
+    builderHintEl.style.display = show ? "block" : "none";
+    if (show) {
+        builderHintEl.style.left = `${x + 12}px`;
+        builderHintEl.style.top = `${y + 12}px`;
+    }
+}
+
+function updateBuilderPickHover(clientX, clientY) {
+    if (
+        !isNetBuilderActive ||
+        !netBuilderAttachMode ||
+        !edgePickGroup ||
+        !renderer
+    ) {
+        if (builderHoveredPick) {
+            builderHoveredPick.material.opacity = 0.06;
+            builderHoveredPick = null;
+        }
+        setBuilderHintVisible(false, 0, 0);
+        return;
+    }
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointerNDC, camera);
+    const hits = raycaster.intersectObjects(edgePickGroup.children, false);
+    if (builderHoveredPick) {
+        builderHoveredPick.material.opacity = 0.06;
+        builderHoveredPick = null;
+    }
+    if (hits.length > 0) {
+        builderHoveredPick = hits[0].object;
+        builderHoveredPick.material.opacity = 0.28;
+        setBuilderHintVisible(true, clientX, clientY);
+    } else {
+        setBuilderHintVisible(false, 0, 0);
+    }
+}
+
+function exitNetBuilder() {
+    isNetBuilderActive = false;
+    netBuilderAttachMode = false;
+    builderNetData = null;
+    builderPendingEdge = null;
+    builderUsedEdgeKeys.clear();
+    if (builderAttachToggle) builderAttachToggle.checked = false;
+    if (builderPanelEl) builderPanelEl.hidden = true;
+    if (builderAttachPanel) builderAttachPanel.hidden = true;
+    if (controls) controls.enabled = true;
+    clearEdgePickGroup();
+    setBuilderHintVisible(false, 0, 0);
+}
+
+function enterNetBuilderFromData(netData) {
+    builderNetData = JSON.parse(JSON.stringify(netData));
+    builderPendingEdge = null;
+    isNetBuilderActive = true;
+    netBuilderAttachMode = false;
+    if (builderAttachToggle) builderAttachToggle.checked = false;
+    if (controls) controls.enabled = true;
+    if (builderPanelEl) builderPanelEl.hidden = false;
+    if (builderAttachPanel) builderAttachPanel.hidden = true;
+    hydrateUsedEdgesFromNet(builderNetData);
+    loadAndProcessNet(builderNetData, { allowUnknownSignature: true });
+}
+
+function hydrateUsedEdgesFromNet(netData) {
+    builderUsedEdgeKeys.clear();
+    for (const c of netData.connections || []) {
+        const a = c.toEdge[0];
+        const b = c.toEdge[1];
+        builderUsedEdgeKeys.add(NetBuilder.edgeKey(c.to, a, b));
+    }
+}
+
+function refreshCustomPresetsInSelect() {
+    const sel = document.getElementById("presetNets");
+    if (!sel) return;
+    let grp = document.getElementById("customPresetsOptgroup");
+    if (grp) grp.remove();
+    const presets = NetBuilder.loadCustomPresetsFromStorage();
+    if (presets.length === 0) return;
+    grp = document.createElement("optgroup");
+    grp.id = "customPresetsOptgroup";
+    grp.label = "My saved nets";
+    for (const p of presets) {
+        const opt = document.createElement("option");
+        opt.value = `custom:${p.id}`;
+        opt.textContent = p.name;
+        grp.appendChild(opt);
+    }
+    sel.appendChild(grp);
 }
 
 // --- Function to set visibility of all normal helpers ---
@@ -1649,8 +2265,14 @@ function triggerAnimationStage(stage) {
 
 // toggleFold, togglePause, onWindowResize, easeInOutQuad, animate
 function toggleFold() {
+    if (!f1Mesh) {
+        alert("Load or create a net first.");
+        return;
+    }
     if (!currentFoldAngles) {
-        alert("Load a net file first.");
+        alert(
+            "Folding isn’t available for this net: the face-count pattern doesn’t match a solid in the fold-angle library (Platonic, Archimedean, or rhombic dodecahedron). You can keep editing the layout, export OBJ, or load a preset. If counts match a known solid, folding will unlock automatically.",
+        );
         return;
     }
     if (isAnimating && !isPaused) return;
@@ -1740,6 +2362,19 @@ const presetNets = document.getElementById("presetNets");
 presetNets.addEventListener("change", async (e) => {
     const netName = e.target.value;
     if (!netName) return;
+    if (netName.startsWith("custom:")) {
+        const id = netName.slice("custom:".length);
+        const presets = NetBuilder.loadCustomPresetsFromStorage();
+        const p = presets.find((x) => x.id === id);
+        presetNets.value = "";
+        if (!p) {
+            alert("Saved net not found.");
+            return;
+        }
+        enterNetBuilderFromData(p.netData);
+        return;
+    }
+    exitNetBuilder();
     try {
         const response = await fetch(`nets/${netName}.json`);
         if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
