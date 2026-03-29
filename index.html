@@ -77,6 +77,57 @@
             color: var(--text-muted);
             text-shadow: 0 1px 2px var(--page-bg);
             padding: 0;
+            transition: color 0.2s ease, transform 0.2s ease;
+        }
+
+        @keyframes trial-info-juice {
+            0% {
+                color: var(--text-muted);
+                transform: translateX(0);
+            }
+            22% {
+                color: var(--text);
+                transform: translateX(2px);
+            }
+            45% {
+                transform: translateX(-1px);
+            }
+            70% {
+                transform: translateX(1px);
+            }
+            100% {
+                color: var(--text-muted);
+                transform: translateX(0);
+            }
+        }
+
+        #info.trial-juice {
+            animation: trial-info-juice 0.85s ease-out;
+        }
+
+        @keyframes trial-viewport-rumble {
+            0% {
+                transform: translate(0, 0) rotate(0deg);
+            }
+            18% {
+                transform: translate(3px, -2px) rotate(-0.35deg);
+            }
+            36% {
+                transform: translate(-3px, 2px) rotate(0.4deg);
+            }
+            54% {
+                transform: translate(2px, 1px) rotate(-0.2deg);
+            }
+            72% {
+                transform: translate(-1px, -1px) rotate(0.15deg);
+            }
+            100% {
+                transform: translate(0, 0) rotate(0deg);
+            }
+        }
+
+        #container.trial-rumble {
+            animation: trial-viewport-rumble 0.5s ease-out;
         }
 
         #controls {

@@ -83,7 +83,7 @@ export function starPolygonVerticesXZ(n, m, edgeLength) {
  *
  * @param {string} raw - e.g. "6", "{5/2}", "7/3", "{4,3}"
  * @param {number} edgeLength - chord length for the first edge (hinge / unit scale)
- * @returns {{ noSides: number } | { vertices: number[][] }}
+ * @returns {{ noSides: number } | { vertices: number[][], isStarPolygon?: true }}
  */
 export function schlafliTextToFaceSpec(raw, edgeLength) {
     const inner = normalizeSchlafliInput(raw);
@@ -105,7 +105,7 @@ export function schlafliTextToFaceSpec(raw, edgeLength) {
             throw new Error("Invalid edge length for star polygon.");
         }
         const vertices = starPolygonVerticesXZ(n, m, edgeLength);
-        return { vertices };
+        return { vertices, isStarPolygon: true };
     }
     const intOnly = firstToken.match(/^(\d+)$/);
     if (intOnly) {
@@ -356,12 +356,14 @@ export function buildStarterNet({
                 connections: [],
             };
         }
+        const baseFace = {
+            vertices: spec.vertices.map((p) => [...p]),
+            color: col,
+        };
+        if (spec.isStarPolygon) baseFace.isStarPolygon = true;
         return {
             description: `Custom net (Schläfli ${label})`,
-            baseFace: {
-                vertices: spec.vertices.map((p) => [...p]),
-                color: col,
-            },
+            baseFace,
             connections: [],
         };
     }
@@ -454,6 +456,7 @@ export function applyFlapShapeSpecToConnection(conn, newFaceSpec, options = {}) 
     delete conn.noSides;
     delete conn.vertices;
     delete conn.vertexScale;
+    delete conn.isStarPolygon;
 
     if (newFaceSpec.schlafliText != null) {
         const spec = schlafliTextToFaceSpec(
@@ -472,9 +475,11 @@ export function applyFlapShapeSpecToConnection(conn, newFaceSpec, options = {}) 
             }
         } else {
             conn.vertices = spec.vertices.map((p) => [...p]);
+            if (spec.isStarPolygon) conn.isStarPolygon = true;
         }
     } else if (newFaceSpec.vertices) {
         conn.vertices = newFaceSpec.vertices.map((p) => [...p]);
+        if (newFaceSpec.isStarPolygon) conn.isStarPolygon = true;
         if (hingeOk) {
             const v0 = conn.vertices[0];
             const v1 = conn.vertices[1];
@@ -630,6 +635,7 @@ export function replaceBaseFaceInNet(netData, newFaceSpec, color, options = {}) 
     delete base.noSides;
     delete base.vertices;
     delete base.vertexScale;
+    delete base.isStarPolygon;
 
     if (newFaceSpec.schlafliText != null) {
         const spec = schlafliTextToFaceSpec(
@@ -640,9 +646,11 @@ export function replaceBaseFaceInNet(netData, newFaceSpec, color, options = {}) 
             base.noSides = spec.noSides;
         } else {
             base.vertices = spec.vertices.map((p) => [...p]);
+            if (spec.isStarPolygon) base.isStarPolygon = true;
         }
     } else if (newFaceSpec.vertices) {
         base.vertices = newFaceSpec.vertices.map((p) => [...p]);
+        if (newFaceSpec.isStarPolygon) base.isStarPolygon = true;
     } else if (newFaceSpec.noSides != null) {
         base.noSides = newFaceSpec.noSides;
     } else {

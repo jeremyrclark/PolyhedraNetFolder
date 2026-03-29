@@ -1,4 +1,4 @@
-// Polyhedra Net Folder — script v1.36
+// Polyhedra Net Folder — script v1.38
 
 // --- Imports ---
 import * as THREE from "three";
@@ -365,6 +365,26 @@ for (const key in POLYHEDRON_DATA) {
 // Global variable to store fold angles for the currently loaded net
 let currentFoldAngles = null;
 let currentNetName = "No Net Loaded";
+/** ~54.74° — used for missing library keys and for trial folds without a fold table. */
+const EXPERIMENTAL_FOLD_ANGLE_RAD = Math.acos(1 / Math.sqrt(3));
+
+/** Pause on “failed” trial before auto-unfold (ms). */
+const TRIAL_REBOUND_DELAY_MS = 920;
+
+const TRIAL_FAIL_FLAVORS = [
+    "Those hinges were guesses — not a closed solid.",
+    "Nice try! The net doesn’t want to become a polyhedron yet.",
+    "Almost dramatic… but that’s not how this one folds.",
+    "Wrong recipe. Adjust the net and challenge it again.",
+    "The fold table is missing for a reason — keep experimenting.",
+    "Physics says *maybe later*. Tweak and run another trial.",
+    "Still a flat story. Add or move a face, then retry.",
+    "No trophy this round — unfold incoming!",
+];
+
+let trialFoldRunCount = 0;
+let trialFoldPauseActive = false;
+let trialReboundDeadline = 0;
 /** Last net JSON loaded successfully (presets / file); not used while relying on builderNetData in builder. */
 let lastLoadedNetData = null;
 
@@ -1460,7 +1480,7 @@ function loadAndProcessNet(netData, options = {}) {
                 );
             }
             console.warn(
-                `[Custom net] Signature "${signature}" has no fold table — layout only; folding disabled.`,
+                `[Custom net] Signature "${signature}" has no fold table — trial Fold uses guessed angles then auto-unfolds.`,
             );
             currentFoldAngles = null;
             currentNetName = netData.description || "Custom net";
@@ -1476,15 +1496,12 @@ function loadAndProcessNet(netData, options = {}) {
         }
 
         NUM_ANIMATION_STAGES = netData.connections.length;
+        resetTrialFoldGameState();
 
         createNetFromData(netData);
         lastLoadedNetData = JSON.parse(JSON.stringify(netData));
 
-        if (infoDisplay) {
-            infoDisplay.textContent = currentFoldAngles
-                ? `Folding: ${currentNetName}`
-                : `Layout: ${currentNetName} · folding unavailable`;
-        }
+        setInfoLayoutStatus();
     } catch (error) {
         console.error("Failed to process net data:", error);
         alert(`Error processing net data: ${error.message}. Check console.`);
@@ -1566,6 +1583,7 @@ function clearSceneGeometry() {
         }
     }
     builderHoveredPick = null;
+    resetTrialFoldGameState();
     // Reset animation state variables
     isFolded = false;
     isAnimating = false;
@@ -1580,11 +1598,89 @@ function clearSceneGeometry() {
     refreshFoldControlState();
 }
 
-/** Fold is only available when a net is loaded and fold-angle data exists. */
+function pickTrialFailFlavor(runNumber) {
+    const i = Math.max(0, runNumber - 1) % TRIAL_FAIL_FLAVORS.length;
+    return TRIAL_FAIL_FLAVORS[i];
+}
+
+function clearTrialJuiceVisuals() {
+    document.getElementById("container")?.classList.remove("trial-rumble");
+    if (infoDisplay) infoDisplay.classList.remove("trial-juice");
+}
+
+function resetTrialFoldGameState() {
+    trialFoldRunCount = 0;
+    trialFoldPauseActive = false;
+    trialReboundDeadline = 0;
+    clearTrialJuiceVisuals();
+}
+
+function triggerTrialRumble() {
+    const el = document.getElementById("container");
+    if (!el) return;
+    el.classList.remove("trial-rumble");
+    el.offsetWidth;
+    el.classList.add("trial-rumble");
+    el.addEventListener(
+        "animationend",
+        () => el.classList.remove("trial-rumble"),
+        { once: true },
+    );
+}
+
+/**
+ * Beat between “trial fold complete” and auto-unfold: flavor text, rumble, optional early Unfold.
+ */
+function beginTrialReboundPause() {
+    trialFoldRunCount += 1;
+    trialFoldPauseActive = true;
+    trialReboundDeadline = performance.now() + TRIAL_REBOUND_DELAY_MS;
+    isAnimating = false;
+    isPaused = false;
+    if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = "Pause";
+    }
+    const flavor = pickTrialFailFlavor(trialFoldRunCount);
+    if (infoDisplay) {
+        infoDisplay.textContent = `Trial #${trialFoldRunCount}: ${flavor}`;
+        infoDisplay.classList.remove("trial-juice");
+        infoDisplay.offsetWidth;
+        infoDisplay.classList.add("trial-juice");
+    }
+    triggerTrialRumble();
+    refreshFoldControlState();
+    syncBuilderEdgePicksVisibility();
+}
+
+/** True when the net has flaps but no fold-angle table (trial fold + auto-rebound). */
+function canTrialFoldLayout() {
+    return Boolean(f1Mesh && !currentFoldAngles && NUM_ANIMATION_STAGES >= 1);
+}
+
+/** Status line for nets without a fold table (and hint when trial fold is possible). */
+function setInfoLayoutStatus() {
+    if (!infoDisplay || !f1Mesh) return;
+    if (currentFoldAngles) {
+        infoDisplay.textContent = `Folding: ${currentNetName}`;
+        return;
+    }
+    const runs =
+        trialFoldRunCount > 0
+            ? ` · ${trialFoldRunCount} trial run${trialFoldRunCount === 1 ? "" : "s"}`
+            : "";
+    infoDisplay.textContent =
+        NUM_ANIMATION_STAGES >= 1
+            ? `Layout: ${currentNetName}${runs} · no fold table — try Fold for a trial (guessed angles, pause, auto-unfold)`
+            : `Layout: ${currentNetName} · folding unavailable`;
+}
+
+/** Fold / trial fold when the net has at least one flap connection. */
 function refreshFoldControlState() {
     if (!foldButton) return;
     const hasNet = Boolean(f1Mesh);
-    const canFold = Boolean(currentFoldAngles);
+    const canFoldOrTrial =
+        Boolean(currentFoldAngles) || canTrialFoldLayout();
     if (!hasNet) {
         foldButton.disabled = true;
         foldButton.title =
@@ -1592,15 +1688,25 @@ function refreshFoldControlState() {
         foldButton.textContent = "Fold";
         return;
     }
-    if (!canFold) {
+    if (!canFoldOrTrial) {
         foldButton.disabled = true;
         foldButton.title =
-            "This net has no fold-angle table (common for custom nets). Layout and OBJ export still work.";
+            "Add attached faces in the builder (or load a net with connections) to try folding.";
         foldButton.textContent = "Fold";
         return;
     }
+    if (trialFoldPauseActive) {
+        foldButton.disabled = false;
+        foldButton.textContent = "Unfold";
+        foldButton.title =
+            "Skip the wait — start unfolding now (or let the timer run out).";
+        if (pauseButton) pauseButton.disabled = true;
+        return;
+    }
     foldButton.disabled = false;
-    foldButton.title = "";
+    foldButton.title = canTrialFoldLayout()
+        ? "Trial fold: guessed angles, a dramatic pause, then auto-unfold (no fold table for this layout)."
+        : "";
     const foldingForward =
         isAnimating &&
         currentAnimationStage > 0 &&
@@ -1683,6 +1789,7 @@ function resolveNetFaceVertices(faceSpec, L) {
             );
         }
         verts.numSides = verts.length;
+        if (faceSpec.isStarPolygon) verts.isStarPolygon = true;
         return verts;
     }
     const n = faceSpec.noSides;
@@ -1824,16 +1931,36 @@ function unfoldFlipFlapIfOverlappingParent(
     }
 }
 
+/**
+ * Triangle mesh for a simple polygon ring. Convex n-gons use a fan from v0.
+ * Schläfli star polygons ({@link vertices.isStarPolygon}) self-intersect; fan from v0
+ * fills the wrong region — use a fan from the vertex centroid (circumcenter for regular stars).
+ */
 function createRegularPolygonGeometry(vertices) {
     const geometry = new THREE.BufferGeometry();
     if (!vertices || vertices.length < 3) return geometry;
     const numSides = vertices.length;
     const positions = [];
-    const v0 = vertices[0];
-    for (let i = 1; i <= numSides - 2; i++) {
-        positions.push(v0.x, v0.y, v0.z);
-        positions.push(vertices[i + 1].x, vertices[i + 1].y, vertices[i + 1].z);
-        positions.push(vertices[i].x, vertices[i].y, vertices[i].z);
+    if (vertices.isStarPolygon) {
+        const O = calculateLocalCenter(vertices);
+        for (let i = 0; i < numSides; i++) {
+            const a = vertices[i];
+            const b = vertices[(i + 1) % numSides];
+            positions.push(O.x, O.y, O.z);
+            positions.push(b.x, b.y, b.z);
+            positions.push(a.x, a.y, a.z);
+        }
+    } else {
+        const v0 = vertices[0];
+        for (let i = 1; i <= numSides - 2; i++) {
+            positions.push(v0.x, v0.y, v0.z);
+            positions.push(
+                vertices[i + 1].x,
+                vertices[i + 1].y,
+                vertices[i + 1].z,
+            );
+            positions.push(vertices[i].x, vertices[i].y, vertices[i].z);
+        }
     }
     geometry.setAttribute(
         "position",
@@ -2388,6 +2515,9 @@ function createNetFromData(netData) {
 
             allVertices[i] = Fi_final_world_vertices;
             allVertices[i].numSides = k;
+            if (Fi_base_vertices.isStarPolygon) {
+                allVertices[i].isStarPolygon = true;
+            }
             allVertices[i].conn = {
                 R_idx: Fi_M_vertex_index,
                 S_idx: Fi_N_vertex_index,
@@ -2930,10 +3060,10 @@ function getPivotsForStage(stage) {
     }
 }
 
-// triggerAnimationStage uses currentFoldAngles lookup table
+// triggerAnimationStage uses currentFoldAngles when present; otherwise trial fold angles.
 function triggerAnimationStage(stage, meta = {}) {
-    if (!currentFoldAngles) {
-        console.warn("Cannot trigger animation: Fold angles not loaded.");
+    if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) {
+        console.warn("Cannot trigger animation: no fold angles and no flaps.");
         isAnimating = false;
         return;
     }
@@ -2949,6 +3079,7 @@ function triggerAnimationStage(stage, meta = {}) {
         if (stage === endStageUnfold) {
             isFolded = false;
             console.log(`Seq unfold complete.`);
+            if (!currentFoldAngles) setInfoLayoutStatus();
         } else if (meta.foldSequenceComplete) {
             isFolded = true;
             console.log("Seq fold complete.");
@@ -2992,17 +3123,22 @@ function triggerAnimationStage(stage, meta = {}) {
 
         const sides_i = faceData.numSides;
         const sides_j = parentData.numSides;
-        let baseFoldAngleKey = `${sides_i}-${sides_j}`;
-        let baseTargetAngle = currentFoldAngles[baseFoldAngleKey];
-        if (baseTargetAngle === undefined) {
-            baseFoldAngleKey = `${sides_j}-${sides_i}`;
+        let baseTargetAngle;
+        if (currentFoldAngles) {
+            let baseFoldAngleKey = `${sides_i}-${sides_j}`;
             baseTargetAngle = currentFoldAngles[baseFoldAngleKey];
-        }
-        if (baseTargetAngle === undefined) {
-            console.warn(
-                `Using default fold angle for key ${baseFoldAngleKey}.`,
-            );
-            baseTargetAngle = Math.acos(1 / Math.sqrt(3));
+            if (baseTargetAngle === undefined) {
+                baseFoldAngleKey = `${sides_j}-${sides_i}`;
+                baseTargetAngle = currentFoldAngles[baseFoldAngleKey];
+            }
+            if (baseTargetAngle === undefined) {
+                console.warn(
+                    `Using default fold angle for key ${baseFoldAngleKey}.`,
+                );
+                baseTargetAngle = EXPERIMENTAL_FOLD_ANGLE_RAD;
+            }
+        } else {
+            baseTargetAngle = EXPERIMENTAL_FOLD_ANGLE_RAD;
         }
         if (unfolding) baseTargetAngle = 0;
 
@@ -3073,7 +3209,21 @@ function triggerAnimationStage(stage, meta = {}) {
 
 // toggleFold, togglePause, onWindowResize, easeInOutQuad, animate
 function toggleFold() {
-    if (!f1Mesh || !currentFoldAngles) return;
+    if (!f1Mesh) return;
+    if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) return;
+    if (trialFoldPauseActive) {
+        trialFoldPauseActive = false;
+        trialReboundDeadline = 0;
+        clearTrialJuiceVisuals();
+        if (infoDisplay) {
+            infoDisplay.textContent =
+                "Unfolding… (still no fold table for this net)";
+        }
+        triggerAnimationStage(-1);
+        refreshFoldControlState();
+        syncBuilderEdgePicksVisibility();
+        return;
+    }
     if (isAnimating && !isPaused) return;
     if (isAnimating && isPaused) {
         togglePause();
@@ -3124,6 +3274,23 @@ function easeInOutQuad(t) {
 
 function animate(currentTime) {
     requestAnimationFrame(animate);
+    const now = performance.now();
+    if (
+        trialFoldPauseActive &&
+        trialReboundDeadline > 0 &&
+        now >= trialReboundDeadline
+    ) {
+        trialFoldPauseActive = false;
+        trialReboundDeadline = 0;
+        clearTrialJuiceVisuals();
+        if (infoDisplay) {
+            infoDisplay.textContent =
+                "Unfolding… (still no fold table for this net)";
+        }
+        triggerAnimationStage(-1);
+        refreshFoldControlState();
+        syncBuilderEdgePicksVisibility();
+    }
     if (isAnimating && !isPaused) {
         const elapsedTime = currentTime - animationStartTime;
         let progress = Math.min(elapsedTime / currentAnimationDuration, 1);
@@ -3157,14 +3324,22 @@ function animate(currentTime) {
             )
                 nextStage = currentAnimationStage - 1;
             else if (currentAnimationStage === NUM_ANIMATION_STAGES)
-                nextStage = 0; // End fold
+                nextStage = canTrialFoldLayout() ? -1 : 0; // Trial: rebound instead of "closed"
             else if (currentAnimationStage === -NUM_ANIMATION_STAGES)
                 nextStage = -(NUM_ANIMATION_STAGES + 1); // End unfold
-            triggerAnimationStage(nextStage, {
-                foldSequenceComplete:
-                    nextStage === 0 &&
-                    currentAnimationStage === NUM_ANIMATION_STAGES,
-            });
+            const trialRebound =
+                nextStage === -1 &&
+                currentAnimationStage === NUM_ANIMATION_STAGES &&
+                canTrialFoldLayout();
+            if (trialRebound) {
+                beginTrialReboundPause();
+            } else {
+                triggerAnimationStage(nextStage, {
+                    foldSequenceComplete:
+                        nextStage === 0 &&
+                        currentAnimationStage === NUM_ANIMATION_STAGES,
+                });
+            }
         }
     }
     syncBuilderEdgePicksVisibility();
