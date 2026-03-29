@@ -1,8 +1,8 @@
-// Polyhedra Net Folder — script v1.38
+// Polyhedra Net Folder — script v1.42
 
 // --- Imports ---
 import * as THREE from "three";
-import { OrbitControls } from "./js/OrbitControls.js";
+import { TrackballControls } from "./js/TrackballControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import * as NetBuilder from "./net-builder.js";
 
@@ -46,7 +46,6 @@ let exportPngButton;
 let exportSvgButton;
 let darkCanvasCheckbox;
 let renderModeSlider;
-let exitBuilderBtn = null;
 let ambientLight;
 let hemiLight;
 let directionalLight;
@@ -60,6 +59,8 @@ let builderNetData = null;
 const builderUsedEdgeKeys = new Set();
 let builderHoveredPick = null;
 let builderPendingEdge = null;
+/** After a successful edge attach: repeat via double-click on another edge. */
+let builderLastQuickAttach = null;
 const pointerNDC = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 let builderHintEl = null;
@@ -87,6 +88,12 @@ let editFaceSchlafliInputEl = null;
 let editFaceIrregularSelectEl = null;
 let editFaceColorInputEl = null;
 let builderFacePanelEl = null;
+let createBaseBlockEl = null;
+let buildCustomNetBtnEl = null;
+/** True after entering builder via "Build net" until rebuild / exit / load. */
+let builderSessionFromScratch = false;
+
+const TROPHY_STORAGE_KEY = "polyhedraNetFolder.trophies.v1";
 
 const RENDER_MODES = ["wireframe", "translucent", "flat", "rendered"];
 let currentRenderModeIndex = 2;
@@ -362,6 +369,166 @@ for (const key in POLYHEDRON_DATA) {
 }
 // console.log("Face Count Signatures Map:", faceCountSigToVertexConfigKey);
 
+function colorCoordinatedBySidesEnabled() {
+    const el = document.getElementById("colorBySidesCheckbox");
+    return el ? el.checked : true;
+}
+
+/** Muted natural palette by polygon side count (display only when coordinated mode is on). */
+const POLYGON_SIDE_COLOR_CSS = {
+    3: "#c9a45c",
+    4: "#9b87b8",
+    5: "#6e9183",
+    6: "#b88a72",
+    7: "#7a8eb2",
+    8: "#8f8374",
+    9: "#a89b5c",
+    10: "#9c7688",
+    11: "#5c8585",
+    12: "#c49a6c",
+};
+
+function colorCssForPolygonSides(n) {
+    if (!Number.isFinite(n) || n < 3) return "#9a9aa8";
+    if (POLYGON_SIDE_COLOR_CSS[n]) return POLYGON_SIDE_COLOR_CSS[n];
+    const clamped = Math.min(Math.max(Math.round(n), 3), 12);
+    return POLYGON_SIDE_COLOR_CSS[clamped] ?? "#9a9aa8";
+}
+
+function resolveDisplayColorHex(colorFromNet, sideCount) {
+    if (colorCoordinatedBySidesEnabled() && sideCount >= 3) {
+        return parseColor(colorCssForPolygonSides(sideCount));
+    }
+    return parseColor(colorFromNet);
+}
+
+function getVertexConfigKeyForNetData(netData) {
+    try {
+        const faceCounts = {};
+        const baseCount = getFaceVertexCountFromSpec(netData.baseFace);
+        if (baseCount == null) return null;
+        faceCounts[baseCount.toString()] = 1;
+        if (!netData.connections || !Array.isArray(netData.connections))
+            return null;
+        for (let index = 0; index < netData.connections.length; index++) {
+            const conn = netData.connections[index];
+            const nv = getFaceVertexCountFromSpec(conn);
+            if (nv == null) return null;
+            const k = nv.toString();
+            faceCounts[k] = (faceCounts[k] || 0) + 1;
+        }
+        const signature = getFaceCountSignature(faceCounts);
+        return faceCountSigToVertexConfigKey[signature] ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function trophyShortName(polyKey) {
+    const raw = POLYHEDRON_DATA[polyKey]?.name || polyKey;
+    const s = String(raw).replace(/\s*\([^)]*\)\s*/g, "").trim();
+    return s || raw;
+}
+
+/** Poly key → which static 3D-style SVG to show. */
+function trophyVisualKind(polyKey) {
+    const m = {
+        "4.4.4": "cube",
+        "3.3.3": "tetra",
+        "3.3.3.3": "octa",
+        "5.5.5": "dodeca",
+        "3.3.3.3.3": "ico",
+    };
+    return m[polyKey] || "arch";
+}
+
+/** Isometric gold solids (static SVG, no animation). */
+function trophySvgMarkupForKey(polyKey, uniqueIndex) {
+    const kind = trophyVisualKind(polyKey);
+    const gid = `tg${uniqueIndex}`;
+    const gTop = `<linearGradient id="${gid}-t" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#fff8e0"/><stop offset="45%" stop-color="#e8c547"/><stop offset="100%" stop-color="#8a6a18"/></linearGradient>`;
+    const gL = `<linearGradient id="${gid}-l" x1="100%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#f2d56e"/><stop offset="100%" stop-color="#9a7214"/></linearGradient>`;
+    const gR = `<linearGradient id="${gid}-r" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#d4af37"/><stop offset="100%" stop-color="#5c4208"/></linearGradient>`;
+    const gMid = `<linearGradient id="${gid}-m" x1="50%" y1="0%" x2="50%" y2="100%"><stop offset="0%" stop-color="#fcefb4"/><stop offset="100%" stop-color="#a67c1a"/></linearGradient>`;
+
+    if (kind === "cube") {
+        return `<svg class="trophy-svg" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>${gTop}${gL}${gR}</defs><path fill="url(#${gid}-t)" d="M24 5l15 9v1l-15 8-15-8V14z"/><path fill="url(#${gid}-l)" d="M9 15l15 8v20l-15-9V15z"/><path fill="url(#${gid}-r)" d="M24 23l15-8v18l-15 9V23z"/></svg>`;
+    }
+    if (kind === "tetra") {
+        return `<svg class="trophy-svg" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>${gTop}${gL}${gR}</defs><path fill="url(#${gid}-l)" d="M24 7L8 40L24 26L24 7z"/><path fill="url(#${gid}-r)" d="M24 7L40 40L24 26L24 7z"/><path fill="url(#${gid}-t)" d="M8 40h32L24 26L8 40z"/></svg>`;
+    }
+    if (kind === "octa" || kind === "ico") {
+        return `<svg class="trophy-svg" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>${gTop}${gL}${gR}</defs><path fill="url(#${gid}-t)" d="M24 5L10 22h28L24 5z"/><path fill="url(#${gid}-l)" d="M10 22l14 21V22H10z"/><path fill="url(#${gid}-r)" d="M38 22H24v21l14-21z"/></svg>`;
+    }
+    if (kind === "dodeca") {
+        return `<svg class="trophy-svg" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>${gTop}${gMid}</defs><path fill="url(#${gid}-m)" opacity="0.88" d="M24 36l-12-7-2-13 10-10h8l10 10-2 13-12 7z" transform="translate(0 1)"/><path fill="url(#${gid}-t)" d="M24 7l14 10-1 12-13 8-13-8-1-12 14-10z"/></svg>`;
+    }
+    return `<svg class="trophy-svg" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>${gTop}${gL}${gR}${gMid}</defs><path fill="url(#${gid}-t)" d="M24 6l13 7v10l-13 8-13-8V13z"/><path fill="url(#${gid}-l)" d="M11 13l13 8v17l-13-7V13z"/><path fill="url(#${gid}-r)" d="M24 21l13-8v14l-13 7V21z"/><path fill="url(#${gid}-m)" opacity="0.72" d="M24 21v17l13-7V13l-13 8z"/></svg>`;
+}
+
+function renderTrophyStrip() {
+    const strip = document.getElementById("trophyStrip");
+    if (!strip) return;
+    let keys = [];
+    try {
+        keys = JSON.parse(localStorage.getItem(TROPHY_STORAGE_KEY) || "[]");
+    } catch {
+        keys = [];
+    }
+    if (!Array.isArray(keys) || keys.length === 0) {
+        strip.replaceChildren();
+        strip.hidden = true;
+        return;
+    }
+    strip.hidden = false;
+    strip.replaceChildren();
+    const sorted = [...keys].filter((k) => POLYHEDRON_DATA[k]);
+    sorted.sort((a, b) =>
+        trophyShortName(a).localeCompare(trophyShortName(b), undefined, {
+            sensitivity: "base",
+        }),
+    );
+    for (let i = 0; i < sorted.length; i++) {
+        const key = sorted[i];
+        const item = document.createElement("div");
+        item.className = "trophy-item";
+        const medal = document.createElement("div");
+        medal.className = "trophy-medal";
+        medal.setAttribute("aria-hidden", "true");
+        medal.innerHTML = trophySvgMarkupForKey(key, i);
+        const lab = document.createElement("span");
+        lab.className = "trophy-name";
+        lab.textContent = trophyShortName(key);
+        item.appendChild(medal);
+        item.appendChild(lab);
+        strip.appendChild(item);
+    }
+}
+
+/**
+ * @returns {boolean} true if this key was newly added to the collection
+ */
+function awardPolyhedronTrophyIfNew(polyKey) {
+    if (!polyKey || !POLYHEDRON_DATA[polyKey]) return false;
+    let keys = [];
+    try {
+        keys = JSON.parse(localStorage.getItem(TROPHY_STORAGE_KEY) || "[]");
+    } catch {
+        keys = [];
+    }
+    if (!Array.isArray(keys)) keys = [];
+    if (keys.includes(polyKey)) return false;
+    keys.push(polyKey);
+    try {
+        localStorage.setItem(TROPHY_STORAGE_KEY, JSON.stringify(keys));
+    } catch (e) {
+        console.warn("Trophy save failed:", e);
+        return false;
+    }
+    renderTrophyStrip();
+    return true;
+}
+
 // Global variable to store fold angles for the currently loaded net
 let currentFoldAngles = null;
 let currentNetName = "No Net Loaded";
@@ -382,8 +549,11 @@ const TRIAL_FAIL_FLAVORS = [
 let trialFoldRunCount = 0;
 let trialFoldPauseActive = false;
 let trialBuzzerAudioContext = null;
+let foldSuccessAudioContext = null;
 /** Last net JSON loaded successfully (presets / file); not used while relying on builderNetData in builder. */
 let lastLoadedNetData = null;
+/** Known-solid key for scratch-built net; trophy + chime after a full library fold completes. */
+let pendingScratchTrophyKey = null;
 
 // --- Helper Functions --- (Unchanged)
 
@@ -1020,6 +1190,7 @@ function init() {
     camera.position.set(0, 20, 20);
     camera.lookAt(0, 0, 0);
     renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1050,15 +1221,11 @@ function init() {
     fillLight = new THREE.DirectionalLight(0xf0f2ff, 0.4);
     fillLight.position.set(-10, 6, -12);
     scene.add(fillLight);
-    controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.1;
+    controls = new TrackballControls(camera, renderer.domElement);
     controls.target.set(0, 0, 0);
-    // Full 360° orbit around Y; keep polar angle shy of 0/π to avoid gimbal-style sticking at zenith/nadir
-    controls.minAzimuthAngle = -Infinity;
-    controls.maxAzimuthAngle = Infinity;
-    controls.minPolarAngle = 0.02;
-    controls.maxPolarAngle = Math.PI - 0.02;
+    controls.rotateSpeed = 1.2;
+    controls.dynamicDampingFactor = 0.12;
+    controls.panSpeed = 0.45;
     scene.add(createCrosshairAxesHelper(5));
     edgePickGroup = new THREE.Group();
     edgePickGroup.name = "edgePickGroup";
@@ -1077,7 +1244,8 @@ function init() {
     exportSvgButton = document.getElementById("exportSvgButton");
     darkCanvasCheckbox = document.getElementById("darkCanvas");
     renderModeSlider = document.getElementById("renderModeSlider");
-    exitBuilderBtn = document.getElementById("exitBuilderBtn");
+    createBaseBlockEl = document.getElementById("createBaseBlock");
+    buildCustomNetBtnEl = document.getElementById("buildCustomNetBtn");
 
     // Initial UI setup
     speedSlider.value = currentAnimationDuration;
@@ -1095,6 +1263,16 @@ function init() {
     }
     updateRenderModeStopsHighlight();
     infoDisplay.textContent = "Load a net file"; // Initial title
+
+    document.getElementById("colorBySidesCheckbox")?.addEventListener("change", () => {
+        if (lastLoadedNetData) {
+            loadAndProcessNet(JSON.parse(JSON.stringify(lastLoadedNetData)), {
+                allowUnknownSignature: true,
+            });
+        }
+    });
+
+    renderTrophyStrip();
 
     // --- NO Default Net Load ---
 
@@ -1213,6 +1391,26 @@ function init() {
 
     document.getElementById("buildCustomNetBtn")?.addEventListener("click", () => {
         try {
+            if (isNetBuilderActive && createBaseBlockEl?.hidden) {
+                if (
+                    builderDirty &&
+                    !confirmDiscardBuilderWork("Rebuilding the net base.")
+                ) {
+                    return;
+                }
+                builderSessionFromScratch = false;
+                pendingScratchTrophyKey = null;
+                if (createBaseBlockEl) createBaseBlockEl.hidden = false;
+                if (buildCustomNetBtnEl) buildCustomNetBtnEl.textContent = "Build net";
+                exitNetBuilder();
+                clearSceneGeometry();
+                lastLoadedNetData = null;
+                if (infoDisplay) infoDisplay.textContent = "Load a net file";
+                currentFoldAngles = null;
+                NUM_ANIMATION_STAGES = 0;
+                refreshFoldControlState();
+                return;
+            }
             if (
                 isNetBuilderActive &&
                 builderDirty &&
@@ -1220,8 +1418,41 @@ function init() {
             ) {
                 return;
             }
-            const color = createColorInput?.value || "#c9b8e8";
             const kind = createKindSelect?.value || "regular";
+            let color = createColorInput?.value || "#c9b8e8";
+            if (colorCoordinatedBySidesEnabled()) {
+                if (kind === "regular") {
+                    const n = parseInt(createRegularSides?.value || "4", 10);
+                    color = colorCssForPolygonSides(n);
+                } else if (kind === "irregular") {
+                    const ik = createIrregularSelect?.value || "kite_quad";
+                    const lib = NetBuilder.IRREGULAR_POLYGON_LIBRARY[ik];
+                    const len = lib?.vertices?.length ?? 4;
+                    color = colorCssForPolygonSides(len);
+                } else if (kind === "schlafli") {
+                    const sym = (createSchlafliInput?.value || "").trim();
+                    if (!sym) {
+                        throw new Error(
+                            "Enter a Schläfli symbol (e.g. 6, 5/2, or {4,3}).",
+                        );
+                    }
+                    const sp = NetBuilder.schlafliTextToFaceSpec(sym, sideLength);
+                    const pc =
+                        peekSideCountFromSpec(sp, sideLength) ??
+                        getFaceVertexCountFromSpec(sp) ??
+                        6;
+                    color = colorCssForPolygonSides(pc);
+                } else if (kind === "svg") {
+                    const verts = NetBuilder.parseSvgPolygonToNetVertices(
+                        createSvgTextarea?.value || "",
+                    );
+                    if (!verts)
+                        throw new Error(
+                            "Could not parse SVG (use <polygon points=\"...\"> or a simple closed <path d=\"M...Z\">).",
+                        );
+                    color = colorCssForPolygonSides(verts.length);
+                }
+            }
             let data;
             if (kind === "regular") {
                 const n = parseInt(createRegularSides?.value || "4", 10);
@@ -1263,7 +1494,7 @@ function init() {
                     connections: [],
                 };
             }
-            enterNetBuilderFromData(data);
+            enterNetBuilderFromData(data, { fromScratchBuild: true });
         } catch (err) {
             alert(err.message || String(err));
         }
@@ -1332,24 +1563,6 @@ function init() {
         console.log(`Saved net preset: ${trimmed} (${presets.length} total)`);
     });
 
-    exitBuilderBtn?.addEventListener("click", () => {
-        if (!isNetBuilderActive) return;
-        if (
-            builderDirty &&
-            !confirm(
-                "Exit builder? Unsaved changes will be lost unless you saved this net under Saved nets.",
-            )
-        ) {
-            return;
-        }
-        exitNetBuilder();
-        clearSceneGeometry();
-        lastLoadedNetData = null;
-        if (infoDisplay) infoDisplay.textContent = "Load a net file";
-        currentFoldAngles = null;
-        refreshFoldControlState();
-    });
-
     attachNewFaceKind?.addEventListener("change", () => {
         const v = attachNewFaceKind.value;
         setPanelRowHidden("attachRowRegular", v !== "regular");
@@ -1360,7 +1573,6 @@ function init() {
 
     document.getElementById("attachConfirmBtn")?.addEventListener("click", () => {
         if (!builderPendingEdge || !builderNetData) return;
-        const color = attachColorInput?.value || "#b8a9d9";
         let spec;
         try {
             spec = buildFaceSpecFromAttachLikeInputs(
@@ -1373,52 +1585,20 @@ function init() {
             alert(err.message || String(err));
             return;
         }
-        try {
-            const fid = builderPendingEdge.faceId;
-            const pVerts = allVertices[fid];
-            const ia = builderPendingEdge.v0;
-            const ib = builderPendingEdge.v1;
-            if (
-                !pVerts ||
-                !pVerts[ia] ||
-                !pVerts[ib] ||
-                !(pVerts[ia] instanceof THREE.Vector3)
-            ) {
-                alert(
-                    "Could not measure the clicked edge. Load the net again or exit and re-enter the builder.",
-                );
-                return;
-            }
-            const hingeLen = pVerts[ia].distanceTo(pVerts[ib]);
-            if (hingeLen < 1e-6) {
-                alert("That edge is too short to attach to.");
-                return;
-            }
-            const { connection } = NetBuilder.appendFlapToNet(
-                builderNetData,
-                {
-                    parentFaceId: fid,
-                    v0: ia,
-                    v1: ib,
-                },
-                spec,
-                color,
-                {
-                    hingeMatchLength: hingeLen,
-                    referenceSideLength: sideLength,
-                },
-            );
-            builderNetData.connections.push(connection);
+        const sideN =
+            peekSideCountFromSpec(spec, sideLength) ??
+            getFaceVertexCountFromSpec(spec) ??
+            4;
+        const color = colorCoordinatedBySidesEnabled()
+            ? colorCssForPolygonSides(sideN)
+            : attachColorInput?.value || "#b8a9d9";
+        if (tryAppendFlapToEdge(builderPendingEdge, spec, color)) {
             builderPendingEdge = null;
             if (builderAttachPanel) builderAttachPanel.hidden = true;
-            clearBuilderFaceSelection();
-            hydrateUsedEdgesFromNet(builderNetData);
-            loadAndProcessNet(builderNetData, {
-                allowUnknownSignature: true,
-            });
-            builderDirty = true;
-        } catch (err) {
-            alert(err.message || String(err));
+            builderLastQuickAttach = {
+                spec: cloneFaceSpecForRepeat(spec),
+                color,
+            };
         }
     });
 
@@ -1480,6 +1660,27 @@ function init() {
             setBuilderSelectedFace(hit.userData.faceId);
         } else {
             clearBuilderFaceSelection();
+        }
+    });
+
+    renderer.domElement.addEventListener("dblclick", (ev) => {
+        if (!isNetBuilderActive || !builderNetData) return;
+        if (isFolded || isAnimating) return;
+        if (!builderLastQuickAttach) return;
+        const pick = pickEdgePickAtClient(ev.clientX, ev.clientY);
+        if (!pick) return;
+        ev.preventDefault();
+        const spec = builderLastQuickAttach.spec;
+        const sideN =
+            peekSideCountFromSpec(spec, sideLength) ??
+            getFaceVertexCountFromSpec(spec) ??
+            4;
+        const qColor = colorCoordinatedBySidesEnabled()
+            ? colorCssForPolygonSides(sideN)
+            : builderLastQuickAttach.color;
+        if (tryAppendFlapToEdge(pick, spec, qColor)) {
+            builderPendingEdge = null;
+            if (builderAttachPanel) builderAttachPanel.hidden = true;
         }
     });
 
@@ -1553,12 +1754,19 @@ function loadAndProcessNet(netData, options = {}) {
         createNetFromData(netData);
         lastLoadedNetData = JSON.parse(JSON.stringify(netData));
 
+        if (isNetBuilderActive && builderSessionFromScratch) {
+            pendingScratchTrophyKey = getVertexConfigKeyForNetData(netData);
+        } else {
+            pendingScratchTrophyKey = null;
+        }
+
         setInfoLayoutStatus();
     } catch (error) {
         console.error("Failed to process net data:", error);
         alert(`Error processing net data: ${error.message}. Check console.`);
         clearSceneGeometry();
         lastLoadedNetData = null;
+        pendingScratchTrophyKey = null;
         if (infoDisplay) infoDisplay.textContent = `Error Loading Net`;
         currentFoldAngles = null;
         NUM_ANIMATION_STAGES = 0;
@@ -1680,6 +1888,50 @@ function triggerTrialRumble() {
 }
 
 /** Short “game show wrong” buzzer (Web Audio — no asset file). */
+/** Short major arpeggio when a scratch-built net completes a library fold. */
+function playFoldSuccessChime() {
+    try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!foldSuccessAudioContext) foldSuccessAudioContext = new AC();
+        const ctx = foldSuccessAudioContext;
+        void ctx.resume();
+        const t0 = ctx.currentTime + 0.02;
+        const master = ctx.createGain();
+        master.gain.value = 0.11;
+        master.connect(ctx.destination);
+        const freqs = [523.25, 659.25, 783.99, 1046.5];
+        for (let i = 0; i < freqs.length; i++) {
+            const f = freqs[i];
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = "sine";
+            o.frequency.value = f;
+            const st = t0 + i * 0.075;
+            g.gain.setValueAtTime(0, st);
+            g.gain.linearRampToValueAtTime(0.4, st + 0.018);
+            g.gain.exponentialRampToValueAtTime(0.0008, st + 0.42);
+            o.connect(g);
+            g.connect(master);
+            o.start(st);
+            o.stop(st + 0.48);
+        }
+    } catch {
+        /* autoplay or API blocked */
+    }
+}
+
+function tryScratchFoldTrophyReward() {
+    if (!pendingScratchTrophyKey || !currentFoldAngles) return;
+    if (!isNetBuilderActive || !builderSessionFromScratch) return;
+    const data = builderNetData || lastLoadedNetData;
+    if (!data) return;
+    const k = getVertexConfigKeyForNetData(data);
+    if (k !== pendingScratchTrophyKey) return;
+    const newlyAdded = awardPolyhedronTrophyIfNew(k);
+    if (newlyAdded) playFoldSuccessChime();
+}
+
 function playTrialFailBuzzer() {
     try {
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -2487,8 +2739,12 @@ function createNetFromData(netData) {
     clearSceneGeometry();
 
     try {
-        const baseFaceColorValue = parseColor(netData.baseFace.color);
         allVertices[1] = resolveNetFaceVertices(netData.baseFace, L);
+        const baseSideCount = allVertices[1].numSides ?? allVertices[1].length;
+        const baseFaceColorValue = resolveDisplayColorHex(
+            netData.baseFace.color,
+            baseSideCount,
+        );
         const baseGeom = createRegularPolygonGeometry(allVertices[1]);
         if (
             !baseGeom.attributes.position ||
@@ -2701,7 +2957,7 @@ function createNetFromData(netData) {
                     geometry.attributes.position.count === 0
                 )
                     throw new Error(`Geometry creation failed for F${i}`);
-                const colorValue = parseColor(colorInput);
+                const colorValue = resolveDisplayColorHex(colorInput, k);
                 const faceMesh = new THREE.Mesh(
                     geometry,
                     createFaceMaterial(
@@ -2862,12 +3118,16 @@ function exitNetBuilder() {
     isNetBuilderActive = false;
     builderNetData = null;
     builderPendingEdge = null;
+    builderLastQuickAttach = null;
+    builderSessionFromScratch = false;
+    pendingScratchTrophyKey = null;
     builderUsedEdgeKeys.clear();
     builderDirty = false;
     clearBuilderFaceSelection();
     if (builderPanelEl) builderPanelEl.hidden = true;
     if (builderAttachPanel) builderAttachPanel.hidden = true;
-    if (exitBuilderBtn) exitBuilderBtn.disabled = true;
+    if (createBaseBlockEl) createBaseBlockEl.hidden = false;
+    if (buildCustomNetBtnEl) buildCustomNetBtnEl.textContent = "Build net";
     clearEdgePickGroup();
     setBuilderHintVisible(false, 0, 0);
 }
@@ -2878,9 +3138,17 @@ function enterNetBuilderFromData(netData, options = {}) {
     builderPendingEdge = null;
     isNetBuilderActive = true;
     builderDirty = options.fromSavedPreset === true ? false : true;
+    if (options.fromScratchBuild === true) {
+        builderSessionFromScratch = true;
+        if (createBaseBlockEl) createBaseBlockEl.hidden = true;
+        if (buildCustomNetBtnEl) buildCustomNetBtnEl.textContent = "Rebuild net base";
+    } else {
+        builderSessionFromScratch = false;
+        if (createBaseBlockEl) createBaseBlockEl.hidden = false;
+        if (buildCustomNetBtnEl) buildCustomNetBtnEl.textContent = "Build net";
+    }
     if (builderPanelEl) builderPanelEl.hidden = false;
     if (builderAttachPanel) builderAttachPanel.hidden = true;
-    if (exitBuilderBtn) exitBuilderBtn.disabled = false;
     hydrateUsedEdgesFromNet(builderNetData);
     loadAndProcessNet(builderNetData, { allowUnknownSignature: true });
     setCreateSectionExpanded(true);
@@ -2898,6 +3166,79 @@ function hydrateUsedEdgesFromNet(netData) {
 function netColorToHexInput(colorInput) {
     const n = parseColor(colorInput);
     return `#${n.toString(16).padStart(6, "0")}`;
+}
+
+function cloneFaceSpecForRepeat(spec) {
+    if (typeof structuredClone === "function") {
+        return structuredClone(spec);
+    }
+    return JSON.parse(JSON.stringify(spec));
+}
+
+/**
+ * @returns {boolean} true if a flap was appended
+ */
+function tryAppendFlapToEdge(pick, spec, color) {
+    if (!pick || !builderNetData) return false;
+    try {
+        const fid = pick.faceId;
+        const pVerts = allVertices[fid];
+        const ia = pick.v0;
+        const ib = pick.v1;
+        if (
+            !pVerts ||
+            !pVerts[ia] ||
+            !pVerts[ib] ||
+            !(pVerts[ia] instanceof THREE.Vector3)
+        ) {
+            alert(
+                "Could not measure the clicked edge. Load the net again or exit and re-enter the builder.",
+            );
+            return false;
+        }
+        const hingeLen = pVerts[ia].distanceTo(pVerts[ib]);
+        if (hingeLen < 1e-6) {
+            alert("That edge is too short to attach to.");
+            return false;
+        }
+        const { connection } = NetBuilder.appendFlapToNet(
+            builderNetData,
+            {
+                parentFaceId: fid,
+                v0: ia,
+                v1: ib,
+            },
+            spec,
+            color,
+            {
+                hingeMatchLength: hingeLen,
+                referenceSideLength: sideLength,
+            },
+        );
+        builderNetData.connections.push(connection);
+        clearBuilderFaceSelection();
+        hydrateUsedEdgesFromNet(builderNetData);
+        loadAndProcessNet(builderNetData, {
+            allowUnknownSignature: true,
+        });
+        builderDirty = true;
+        return true;
+    } catch (err) {
+        alert(err.message || String(err));
+        return false;
+    }
+}
+
+function pickEdgePickAtClient(clientX, clientY) {
+    if (!renderer || !camera || !edgePickGroup) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointerNDC, camera);
+    const hits = raycaster.intersectObjects(edgePickGroup.children, false);
+    if (hits.length === 0) return null;
+    const pick = hits[0].object?.userData?.pick;
+    return pick || null;
 }
 
 function buildFaceSpecFromAttachLikeInputs(kindSelect, regSides, schlafli, irrSel) {
@@ -3065,7 +3406,6 @@ function applyReplaceSelectedFaceShape() {
     if (!isNetBuilderActive || builderSelectedFaceId == null || !builderNetData) {
         return;
     }
-    const color = editFaceColorInputEl?.value || "#b8a9d9";
     let spec;
     try {
         spec = buildFaceSpecFromAttachLikeInputs(
@@ -3094,6 +3434,10 @@ function applyReplaceSelectedFaceShape() {
                 )
             ) {
                 return;
+            }
+            let color = editFaceColorInputEl?.value || "#b8a9d9";
+            if (colorCoordinatedBySidesEnabled() && nextSides != null) {
+                color = colorCssForPolygonSides(nextSides);
             }
             NetBuilder.replaceBaseFaceInNet(builderNetData, spec, color, {
                 referenceSideLength: sideLength,
@@ -3125,6 +3469,10 @@ function applyReplaceSelectedFaceShape() {
                 )
             ) {
                 return;
+            }
+            let color = editFaceColorInputEl?.value || "#b8a9d9";
+            if (colorCoordinatedBySidesEnabled() && nextSides != null) {
+                color = colorCssForPolygonSides(nextSides);
             }
             NetBuilder.replaceAttachedFaceShapeInNet(
                 builderNetData,
@@ -3211,6 +3559,7 @@ function triggerAnimationStage(stage, meta = {}) {
         } else if (meta.foldSequenceComplete) {
             isFolded = true;
             console.log("Seq fold complete.");
+            tryScratchFoldTrophyReward();
         }
         refreshFoldControlState();
         syncBuilderEdgePicksVisibility();
@@ -3406,7 +3755,9 @@ function onWindowResize() {
     if (!camera || !renderer) return;
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
+    if (controls?.handleResize) controls.handleResize();
 }
 function easeInOutQuad(t) {
     return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;

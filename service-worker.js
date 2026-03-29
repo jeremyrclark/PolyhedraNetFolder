@@ -1,11 +1,11 @@
-const CACHE_NAME = 'my-pwa-cache-v1';
+const CACHE_NAME = 'my-pwa-cache-v2';
 const urlsToCache = [
     '/',
     '/index.html',
     '/script.js',
     '/tween.umd.js',
     '/js/three.module.js',
-    '/js/OrbitControls.js',
+    '/js/TrackballControls.js',
     '/nets/tetrahedron-top.json',
     '/nets/cube-top.json',
     '/nets/octahedron-top.json',

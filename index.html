@@ -61,6 +61,10 @@
 
         canvas { display: block; }
 
+        body:has(#trophyStrip:not([hidden])) #info {
+            bottom: 52px;
+        }
+
         #info {
             position: absolute;
             bottom: 14px;
@@ -568,11 +572,73 @@
         #saveNetFeedback {
             margin-top: 6px;
         }
+
+        #createBaseBlock[hidden] {
+            display: none !important;
+        }
+
+        #trophyStrip {
+            position: fixed;
+            left: 50%;
+            bottom: 10px;
+            transform: translateX(-50%);
+            z-index: 98;
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            gap: 14px;
+            max-width: min(96vw, 720px);
+            overflow-x: auto;
+            overflow-y: visible;
+            padding: 6px 12px 8px;
+            pointer-events: none;
+            scrollbar-width: thin;
+        }
+
+        #trophyStrip::-webkit-scrollbar {
+            height: 4px;
+        }
+
+        .trophy-item {
+            flex: 0 0 auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            width: 52px;
+        }
+
+        .trophy-medal {
+            width: 40px;
+            height: 40px;
+            display: grid;
+            place-items: center;
+            filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4));
+        }
+
+        .trophy-medal .trophy-svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .trophy-name {
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            text-align: center;
+            line-height: 1.15;
+            max-width: 56px;
+            text-shadow: 0 1px 2px var(--page-bg);
+        }
     </style>
 </head>
 <body>
     <div id="info">Folding Polyhedron Net</div>
     <div id="builderEdgeHint" aria-hidden="true">+</div>
+    <div id="trophyStrip" aria-label="Polyhedra you built from scratch" hidden></div>
     <div id="container"></div>
 
     <div id="controls">
@@ -654,6 +720,7 @@
 
         <section class="control-section" id="createSection" hidden aria-labelledby="sec-create">
             <h2 class="section-title" id="sec-create">Create</h2>
+            <div id="createBaseBlock">
             <div class="row fill tight">
                 <label for="createKindSelect">Base</label>
                 <select id="createKindSelect">
@@ -700,9 +767,9 @@
                 <label for="createColorInput">Color</label>
                 <input type="color" id="createColorInput" value="#c9b8e8">
             </div>
+            </div>
             <div class="row" style="flex-wrap: nowrap; gap: 6px;">
                 <button type="button" id="buildCustomNetBtn" class="primary" style="flex: 1; min-width: 0;">Build net</button>
-                <button type="button" id="exitBuilderBtn" disabled title="Exit builder">Exit</button>
             </div>
             <div id="builderPanel" hidden>
                 <div id="builderFacePanel" class="builder-face-panel" hidden>
@@ -795,6 +862,7 @@
                         <button type="button" id="attachConfirmBtn" class="primary">Attach</button>
                         <button type="button" id="attachCancelBtn">Cancel</button>
                     </div>
+                    <p class="kbd-hint" style="margin-top:8px;margin-bottom:0;">After one attach, double-click an edge to attach the same shape again.</p>
                 </div>
             </div>
         </section>
@@ -806,6 +874,10 @@
                 <input type="checkbox" id="darkCanvas" name="darkCanvas" class="theme-toggle-input" checked role="switch" aria-checked="true" aria-labelledby="darkCanvasLabel">
                 <span class="theme-toggle-track" aria-hidden="true"><span class="theme-toggle-thumb"></span></span>
             </label>
+            <div class="check-row">
+                <input type="checkbox" id="colorBySidesCheckbox" name="colorBySides" checked>
+                <label for="colorBySidesCheckbox">Color coordinated by sides</label>
+            </div>
             <div class="check-row">
                 <input type="checkbox" id="toggleNormals" name="toggleNormals">
                 <label for="toggleNormals">Show face normals</label>
