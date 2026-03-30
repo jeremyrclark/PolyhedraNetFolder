@@ -1,4 +1,4 @@
-const CACHE_NAME = 'my-pwa-cache-v2';
+const CACHE_NAME = 'my-pwa-cache-v16';
 const urlsToCache = [
     '/',
     '/index.html',
@@ -25,7 +25,26 @@ const urlsToCache = [
     '/nets/snub-cube-top.json',
     '/nets/snub-dodecahedron-top.json',
     '/icons/192.png',
-    '/icons/512.png'
+    '/icons/512.png',
+    '/trophies/cube-top.png',
+    '/trophies/tetrahedron-top.png',
+    '/trophies/octahedron-top.png',
+    '/trophies/dodecahedron-top.png',
+    '/trophies/icosahedron-top.png',
+    '/trophies/truncated-tetrahedron-top.png',
+    '/trophies/truncated-cube-top.png',
+    '/trophies/truncated-octahedron-top.png',
+    '/trophies/truncated-dodecahedron-top.png',
+    '/trophies/truncated-icosahedron-top.png',
+    '/trophies/cuboctahedron-top.png',
+    '/trophies/truncated-cuboctahedron-top.png',
+    '/trophies/icosidodecahedron-top.png',
+    '/trophies/rhombicuboctahedron-top.png',
+    '/trophies/small-rhombicosidodecahedron-top.png',
+    '/trophies/truncated-icosidodecahedron-top.png',
+    '/trophies/snub-cube-top.png',
+    '/trophies/snub-dodecahedron-top.png',
+    '/trophies/rhombic-dodecahedron-net.png'
 ];
 
 self.addEventListener('install', event => {

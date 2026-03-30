@@ -61,10 +61,6 @@
 
         canvas { display: block; }
 
-        body:has(#trophyStrip:not([hidden])) #info {
-            bottom: 52px;
-        }
-
         #info {
             position: absolute;
             bottom: 14px;
@@ -577,68 +573,125 @@
             display: none !important;
         }
 
+        /* hidden must win over display:flex — otherwise the strip stays on-screen when empty. */
+        #trophyStrip[hidden] {
+            display: none !important;
+        }
+
         #trophyStrip {
             position: fixed;
-            left: 50%;
-            bottom: 10px;
-            transform: translateX(-50%);
+            right: 10px;
+            top: 72px;
+            bottom: 12px;
             z-index: 98;
             display: flex;
-            flex-direction: row;
-            flex-wrap: nowrap;
-            gap: 14px;
-            max-width: min(96vw, 720px);
-            overflow-x: auto;
-            overflow-y: visible;
-            padding: 6px 12px 8px;
+            flex-direction: column;
+            align-items: flex-end;
+            justify-content: flex-start;
+            gap: 6px;
+            max-width: min(280px, 42vw);
+            overflow-x: hidden;
+            overflow-y: auto;
+            padding: 4px 0 4px 8px;
             pointer-events: none;
             scrollbar-width: thin;
         }
 
         #trophyStrip::-webkit-scrollbar {
-            height: 4px;
+            width: 5px;
         }
 
         .trophy-item {
             flex: 0 0 auto;
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             align-items: center;
-            gap: 4px;
-            width: 52px;
+            justify-content: flex-end;
+            gap: 8px;
+            width: 100%;
+            max-width: 100%;
         }
 
         .trophy-medal {
-            width: 40px;
-            height: 40px;
+            width: 44px;
+            height: 44px;
+            flex: 0 0 44px;
             display: grid;
             place-items: center;
             filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4));
         }
 
-        .trophy-medal .trophy-svg {
-            width: 100%;
-            height: 100%;
+        .trophy-medal .trophy-thumb-img {
+            width: 44px;
+            height: 44px;
             display: block;
+            object-fit: contain;
         }
 
         .trophy-name {
-            font-size: 9px;
+            font-size: 8px;
             font-weight: 600;
             letter-spacing: 0.04em;
             text-transform: uppercase;
             color: var(--text-muted);
-            text-align: center;
-            line-height: 1.15;
-            max-width: 56px;
+            text-align: right;
+            line-height: 1.2;
+            flex: 1 1 auto;
+            min-width: 0;
+            word-break: break-word;
+            hyphens: auto;
             text-shadow: 0 1px 2px var(--page-bg);
+        }
+
+        .stellation-blurb {
+            font-size: 11px;
+            line-height: 1.4;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        #stellationPolyHint,
+        #stellationLockedNote {
+            font-size: 11px;
+            line-height: 1.35;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        .stellation-section--locked .stellation-interactive {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        .stellation-interactive select {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        .stellation-diagram-wrap {
+            margin-top: 8px;
+        }
+
+        .stellation-diagram-wrap[hidden] {
+            display: none !important;
+        }
+
+        #stellationDiagramCanvas {
+            display: block;
+            width: 100%;
+            max-width: 280px;
+            height: auto;
+            border-radius: 8px;
+            border: 1px solid var(--panel-border, rgba(0, 0, 0, 0.12));
+            background: var(--page-bg, #fff);
+            touch-action: none;
         }
     </style>
 </head>
 <body>
     <div id="info">Folding Polyhedron Net</div>
     <div id="builderEdgeHint" aria-hidden="true">+</div>
-    <div id="trophyStrip" aria-label="Polyhedra you built from scratch" hidden></div>
+    <div id="trophyStrip" aria-label="Unlocked polyhedron trophies" hidden></div>
     <div id="container"></div>
 
     <div id="controls">
@@ -879,6 +932,16 @@
                 <label for="colorBySidesCheckbox">Color coordinated by sides</label>
             </div>
             <div class="check-row">
+                <input type="checkbox" id="translucentStellationsCheckbox" name="translucentStellations" checked>
+                <label for="translucentStellationsCheckbox">Translucent stellations</label>
+            </div>
+            <!-- Trophy preview (gold PBR) — feature paused; see script.js listener comment to restore.
+            <div class="check-row">
+                <input type="checkbox" id="trophyPreviewGoldCheckbox" name="trophyPreviewGold">
+                <label for="trophyPreviewGoldCheckbox">Trophy preview (gold PBR)</label>
+            </div>
+            -->
+            <div class="check-row">
                 <input type="checkbox" id="toggleNormals" name="toggleNormals">
                 <label for="toggleNormals">Show face normals</label>
             </div>
@@ -896,16 +959,72 @@
             </div>
         </section>
 
-        <section class="control-section" aria-labelledby="sec-animation">
-            <h2 class="section-title" id="sec-animation">Animation</h2>
+        <section class="control-section" aria-labelledby="sec-folding">
+            <h2 class="section-title" id="sec-folding">Folding</h2>
             <div class="row">
-                <button type="button" id="foldButton" class="primary">Fold</button>
+                <button type="button" id="foldButton" class="primary">Animated Fold</button>
                 <button type="button" id="pauseButton" disabled>Pause</button>
+                <button type="button" id="instantFoldButton">Fold</button>
             </div>
             <div class="row tight">
                 <label for="speedSlider">Speed</label>
-                <input type="range" id="speedSlider" min="200" max="4000" value="500" step="100">
+                <input type="range" id="speedSlider" min="10" max="4000" value="500" step="10">
                 <span id="speedValue">500 ms</span>
+            </div>
+        </section>
+
+        <section
+            class="control-section stellation-section--locked"
+            id="stellationSection"
+            aria-labelledby="sec-stellation"
+            aria-disabled="true"
+        >
+            <h2 class="section-title" id="sec-stellation">Stellation</h2>
+            <p class="stellation-blurb">
+                Classical <strong>stellation</strong> extends each face plane until new cells close up—famous on the
+                dodecahedron and icosahedron (e.g. Miller’s set), and on the Kepler–Poinsot stars. The
+                <strong>Stellation diagram</strong> mode plots where other face planes meet one face plane (including
+                for the rhombic dodecahedron's rhombi). <strong>Uniform pyramids</strong> mode adds a congruent pyramid on
+                every face (height slider). In diagram mode, region clicks build a partial classical-style stellation on the reference face; full Miller cell closure can be added later.
+            </p>
+            <p id="stellationPolyHint" class="stellation-blurb" hidden></p>
+            <p id="stellationLockedNote" class="stellation-blurb">Fold the net fully to explore stellation.</p>
+            <div class="stellation-interactive row fill">
+                <label for="stellationPresetSelect">Mode</label>
+                <select id="stellationPresetSelect" disabled>
+                    <option value="off" selected>Off</option>
+                    <option value="diagram">Stellation diagram</option>
+                    <optgroup label="Classical (planned)">
+                        <option value="miller-icosahedral" disabled>Icosahedral Miller subset</option>
+                        <option value="kepler-poinsot" disabled>Kepler–Poinsot–style stars</option>
+                    </optgroup>
+                    <optgroup label="Sculptural">
+                        <option value="uniform-caps">Uniform pyramids on every face</option>
+                    </optgroup>
+                </select>
+            </div>
+            <div
+                id="stellationCapsRow"
+                class="row tight fill stellation-interactive"
+                hidden
+            >
+                <label for="stellationCapHeightSlider">Cap height</label>
+                <input
+                    type="range"
+                    id="stellationCapHeightSlider"
+                    min="0"
+                    max="100"
+                    value="22"
+                    step="1"
+                >
+                <span id="stellationCapHeightValue">22%</span>
+            </div>
+            <div id="stellationDiagramWrap" class="stellation-diagram-wrap stellation-interactive" hidden>
+                <canvas id="stellationDiagramCanvas" width="560" height="560" aria-label="Stellation diagram"></canvas>
+                <div class="row tight" style="margin-top: 6px">
+                    <button type="button" id="stellDiagramClearSelectionBtn">Clear diagram selection</button>
+                </div>
+                <p id="stellationDiagramCaption" class="stellation-blurb" style="margin-top: 6px"></p>
             </div>
         </section>
     </div>

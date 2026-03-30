@@ -1,4 +1,4 @@
-// Polyhedra Net Folder — script v1.42
+// Polyhedra Net Folder — script v1.60
 
 // --- Imports ---
 import * as THREE from "three";
@@ -15,6 +15,28 @@ const pivots = {};
 const allVertices = {}; // Stores calculated initial world vertices for net layout
 let f1Mesh = null;
 const normalHelpers = {}; // Stores references to ArrowHelper objects
+/** Uniform pyramid stellation caps (Mode: uniform-caps). */
+let stellationCapsGroup = null;
+/** Extruded panels from stellation diagram region picks (reference face). */
+let stellationDiagramSelectionGroup = null;
+/** @type {Set<string>} region centroid keys for stable selection across redraws */
+const stellDiagramSelectedKeys = new Set();
+/** Last diagram pick state (inverse transform + 3D frame). */
+let stellDiagramPickState = null;
+let stellDiagramPointerInside = false;
+let stellDiagramLastPointerClientX = 0;
+let stellDiagramLastPointerClientY = 0;
+let stellDiagramViewZoom = 1;
+let stellDiagramViewPanU = 0;
+let stellDiagramViewPanV = 0;
+let stellDiagramViewLastPolyKey = null;
+let stellDiagramPanActive = false;
+let stellDiagramPanPointerId = null;
+let stellDiagramPanLastCssX = 0;
+let stellDiagramPanLastCssY = 0;
+let stellDiagramSuppressNextClick = false;
+let stellDiagramPanHadMotion = false;
+let stellDiagramPanUsedAltLeft = false;
 
 // --- Configuration ---
 const sideLength = 3;
@@ -35,6 +57,7 @@ let pivotsInCurrentStage = [];
 
 // --- DOM Elements ---
 let foldButton;
+let instantFoldButton;
 let pauseButton;
 let speedSlider;
 let speedValueSpan;
@@ -92,8 +115,43 @@ let createBaseBlockEl = null;
 let buildCustomNetBtnEl = null;
 /** True after entering builder via "Build net" until rebuild / exit / load. */
 let builderSessionFromScratch = false;
+/** Appearance: main net in gold PBR for export / preview. */
+let trophyPreviewGoldActive = false;
 
 const TROPHY_STORAGE_KEY = "polyhedraNetFolder.trophies.v1";
+/**
+ * Strip stays hidden until this is "1", set when a trophy is newly awarded.
+ * Legacy: one-time unlock for saves that had trophies before this flag existed (see migration key).
+ */
+const TROPHY_STRIP_UNLOCKED_KEY = "polyhedraNetFolder.trophyStripUnlocked.v1";
+const TROPHY_STRIP_LEGACY_UNLOCK_MIGRATED_KEY =
+    "polyhedraNetFolder.trophyStripLegacyUnlockMigrated.v1";
+
+/**
+ * Preset JSON under nets/ for each library polyhedron key.
+ * Optional trophy PNGs: `trophies/<same basename as json>.png` (e.g. cube-top.png) or `trophies/<poly key>.png` (e.g. 4.4.4.png).
+ */
+const POLY_KEY_TO_PRESET_NET_FILE = {
+    "3.3.3": "tetrahedron-top.json",
+    "4.4.4": "cube-top.json",
+    "3.3.3.3": "octahedron-top.json",
+    "5.5.5": "dodecahedron-top.json",
+    "3.3.3.3.3": "icosahedron-top.json",
+    "3.6.6": "truncated-tetrahedron-top.json",
+    "3.8.8": "truncated-cube-top.json",
+    "4.6.6": "truncated-octahedron-top.json",
+    "3.10.10": "truncated-dodecahedron-top.json",
+    "5.6.6": "truncated-icosahedron-top.json",
+    "3.4.3.4": "cuboctahedron-top.json",
+    "4.6.8": "truncated-cuboctahedron-top.json",
+    "3.5.3.5": "icosidodecahedron-top.json",
+    "3.4.4.4": "rhombicuboctahedron-top.json",
+    "3.4.5.4": "small-rhombicosidodecahedron-top.json",
+    "4.6.10": "truncated-icosidodecahedron-top.json",
+    "3.3.3.3.4": "snub-cube-top.json",
+    "3.3.3.3.5": "snub-dodecahedron-top.json",
+    "rhombic-dodecahedron": "rhombic-dodecahedron-net.json",
+};
 
 const RENDER_MODES = ["wireframe", "translucent", "flat", "rendered"];
 let currentRenderModeIndex = 2;
@@ -480,6 +538,31 @@ function renderTrophyStrip() {
         strip.hidden = true;
         return;
     }
+    let stripUnlocked = false;
+    try {
+        let u = localStorage.getItem(TROPHY_STRIP_UNLOCKED_KEY);
+        if (u === null && keys.length > 0) {
+            if (
+                localStorage.getItem(TROPHY_STRIP_LEGACY_UNLOCK_MIGRATED_KEY) ===
+                null
+            ) {
+                localStorage.setItem(TROPHY_STRIP_UNLOCKED_KEY, "1");
+                localStorage.setItem(
+                    TROPHY_STRIP_LEGACY_UNLOCK_MIGRATED_KEY,
+                    "1",
+                );
+                u = "1";
+            }
+        }
+        stripUnlocked = u === "1";
+    } catch {
+        stripUnlocked = false;
+    }
+    if (!stripUnlocked) {
+        strip.replaceChildren();
+        strip.hidden = true;
+        return;
+    }
     strip.hidden = false;
     strip.replaceChildren();
     const sorted = [...keys].filter((k) => POLYHEDRON_DATA[k]);
@@ -495,12 +578,19 @@ function renderTrophyStrip() {
         const medal = document.createElement("div");
         medal.className = "trophy-medal";
         medal.setAttribute("aria-hidden", "true");
-        medal.innerHTML = trophySvgMarkupForKey(key, i);
+        const thumb = document.createElement("img");
+        thumb.className = "trophy-thumb-img";
+        thumb.alt = "";
+        thumb.decoding = "async";
+        thumb.width = 44;
+        thumb.height = 44;
+        medal.appendChild(thumb);
+        scheduleTrophyThumb(key, thumb);
         const lab = document.createElement("span");
         lab.className = "trophy-name";
         lab.textContent = trophyShortName(key);
-        item.appendChild(medal);
         item.appendChild(lab);
+        item.appendChild(medal);
         strip.appendChild(item);
     }
 }
@@ -521,6 +611,7 @@ function awardPolyhedronTrophyIfNew(polyKey) {
     keys.push(polyKey);
     try {
         localStorage.setItem(TROPHY_STORAGE_KEY, JSON.stringify(keys));
+        localStorage.setItem(TROPHY_STRIP_UNLOCKED_KEY, "1");
     } catch (e) {
         console.warn("Trophy save failed:", e);
         return false;
@@ -552,6 +643,14 @@ let trialBuzzerAudioContext = null;
 let foldSuccessAudioContext = null;
 /** Last net JSON loaded successfully (presets / file); not used while relying on builderNetData in builder. */
 let lastLoadedNetData = null;
+let trophyThumbRenderer = null;
+let trophyThumbScene = null;
+const trophyThumbCache = new Map();
+const trophyThumbInflight = new Map();
+/** Bump when trophy image pipeline changes (clears stale cached data URLs). */
+function trophyThumbCacheKey(polyKey) {
+    return `v6:${polyKey}`;
+}
 /** Known-solid key for scratch-built net; trophy + chime after a full library fold completes. */
 let pendingScratchTrophyKey = null;
 
@@ -642,14 +741,26 @@ function getMeshWorldVertices(faceIndex) {
 }
 
 /**
- * Average world position of all mesh vertices except one face (the flap being folded).
+ * Average world position of mesh vertices except one face (the flap being folded).
  * Used to pick fold sign so the flap closes toward the rest of the net.
+ * When maxIncludedFaceId is set, only faces with id <= maxIncludedFaceId are used so
+ * vertices still in the flat (not-yet-folded) sheet do not dominate the centroid —
+ * that skewed mid-sequence sign choice for nets like the snub cube.
  */
-function computeBulkCentroidWorldExcludingFace(excludeFaceId) {
+function computeBulkCentroidWorldExcludingFace(
+    excludeFaceId,
+    maxIncludedFaceId = null,
+) {
     const sum = new THREE.Vector3();
     let count = 0;
     const addFace = (fid) => {
         if (fid === excludeFaceId) return;
+        if (
+            maxIncludedFaceId != null &&
+            maxIncludedFaceId >= 1 &&
+            fid > maxIncludedFaceId
+        )
+            return;
         const wv = getMeshWorldVertices(fid);
         if (!wv) return;
         for (let i = 0; i < wv.length; i++) {
@@ -683,6 +794,39 @@ function calculateWorldNormal(worldVerts) {
     const edge1 = new THREE.Vector3().subVectors(vB, vA);
     const edge2 = new THREE.Vector3().subVectors(vC, vA);
     return new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+}
+
+/**
+ * Face meshes expose buffer vertices in arbitrary order; the first three are not
+ * always non-collinear. Pick the triple with largest triangle area (stable plane).
+ * @param {THREE.Vector3[] | null} worldVerts
+ * @returns {THREE.Vector3}
+ */
+function calculateWorldNormalRobust(worldVerts) {
+    if (!worldVerts || worldVerts.length < 3)
+        return new THREE.Vector3(0, 1, 0);
+    const verts = worldVerts.filter((v) => v instanceof THREE.Vector3);
+    if (verts.length < 3) return new THREE.Vector3(0, 1, 0);
+    const e1 = new THREE.Vector3();
+    const e2 = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    let bestLenSq = 0;
+    const best = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < verts.length; i++) {
+        for (let j = i + 1; j < verts.length; j++) {
+            for (let k = j + 1; k < verts.length; k++) {
+                e1.subVectors(verts[j], verts[i]);
+                e2.subVectors(verts[k], verts[i]);
+                c.crossVectors(e1, e2);
+                const l2 = c.lengthSq();
+                if (l2 > bestLenSq) {
+                    bestLenSq = l2;
+                    best.copy(c);
+                }
+            }
+        }
+    }
+    return bestLenSq > 1e-24 ? best.normalize() : new THREE.Vector3(0, 1, 0);
 }
 
 // Calculates world centroid
@@ -960,9 +1104,32 @@ function exportPNGTransparent() {
     exportRenderer.toneMapping = renderer.toneMapping;
     exportRenderer.toneMappingExposure = renderer.toneMappingExposure;
     exportRenderer.shadowMap.enabled = renderer.shadowMap.enabled;
+    exportRenderer.shadowMap.type = renderer.shadowMap.type;
     exportRenderer.setClearColor(0x000000, 0);
 
+    /** PNG has no canvas-gray backdrop; PBR shadows read as pure black. Lift exposure + fill slightly for export only. */
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    const liftPbrExport = mode === "rendered" || trophyPreviewGoldActive;
+    const lightRestores = [];
+    if (liftPbrExport) {
+        exportRenderer.toneMappingExposure *= 1.38;
+        const bumpLight = (L, mult) => {
+            if (!L) return;
+            const o = L.intensity;
+            L.intensity *= mult;
+            lightRestores.push(() => {
+                L.intensity = o;
+            });
+        };
+        bumpLight(ambientLight, 1.32);
+        bumpLight(hemiLight, 1.32);
+        bumpLight(fillLight, 1.7);
+        bumpLight(directionalLight, 1.06);
+    }
+
     exportRenderer.render(scene, camera);
+
+    for (let i = lightRestores.length - 1; i >= 0; i--) lightRestores[i]();
 
     camera.aspect = oldAspect;
     camera.updateProjectionMatrix();
@@ -1195,7 +1362,7 @@ function init() {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.0;
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = false;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.getElementById("container").appendChild(renderer.domElement);
     setupImageBasedLighting();
@@ -1207,7 +1374,7 @@ function init() {
     scene.add(hemiLight);
     directionalLight = new THREE.DirectionalLight(0xffffff, 1.14);
     directionalLight.position.set(8, 18, 10);
-    directionalLight.castShadow = true;
+    directionalLight.castShadow = false;
     directionalLight.shadow.mapSize.set(2048, 2048);
     directionalLight.shadow.camera.near = 1;
     directionalLight.shadow.camera.far = 90;
@@ -1233,6 +1400,7 @@ function init() {
 
     // Get DOM Elements
     foldButton = document.getElementById("foldButton");
+    instantFoldButton = document.getElementById("instantFoldButton");
     pauseButton = document.getElementById("pauseButton");
     speedSlider = document.getElementById("speedSlider");
     speedValueSpan = document.getElementById("speedValue");
@@ -1272,6 +1440,11 @@ function init() {
         }
     });
 
+    // Trophy preview (gold PBR) — disabled in UI; re-enable by restoring the Appearance checkbox + handler.
+    // document.getElementById("trophyPreviewGoldCheckbox")?.addEventListener("change", (e) => {
+    //     applyTrophyPreviewGold(Boolean(e.target.checked));
+    // });
+
     renderTrophyStrip();
 
     // --- NO Default Net Load ---
@@ -1280,8 +1453,67 @@ function init() {
     window.addEventListener("resize", onWindowResize);
     foldButton.addEventListener("click", toggleFold);
     pauseButton.addEventListener("click", togglePause);
+    instantFoldButton?.addEventListener("click", instantFoldToClosed);
+    document.getElementById("stellationPresetSelect")?.addEventListener(
+        "change",
+        (e) => {
+            const v = e.target.value;
+            if (
+                v !== "off" &&
+                v !== "diagram" &&
+                v !== "uniform-caps"
+            )
+                e.target.value = "off";
+            refreshStellationSectionState();
+        },
+    );
+    document
+        .getElementById("stellationCapHeightSlider")
+        ?.addEventListener("input", () => {
+            refreshStellationCapHeightLabel();
+            rebuildStellationUniformCapsIfNeeded();
+        });
+    const stellDiagCanvas = document.getElementById("stellationDiagramCanvas");
+    stellDiagCanvas?.addEventListener("click", onStellationDiagramCanvasClick);
+    stellDiagCanvas?.addEventListener(
+        "pointerdown",
+        onStellationDiagramCanvasPointerDown,
+    );
+    stellDiagCanvas?.addEventListener(
+        "pointermove",
+        onStellationDiagramCanvasPointerMove,
+    );
+    stellDiagCanvas?.addEventListener(
+        "pointerup",
+        onStellationDiagramCanvasPointerUp,
+    );
+    stellDiagCanvas?.addEventListener(
+        "pointercancel",
+        onStellationDiagramCanvasPointerUp,
+    );
+    stellDiagCanvas?.addEventListener(
+        "pointerleave",
+        onStellationDiagramCanvasPointerLeave,
+    );
+    stellDiagCanvas?.addEventListener("wheel", onStellationDiagramCanvasWheel, {
+        passive: false,
+    });
+    document
+        .getElementById("stellDiagramClearSelectionBtn")
+        ?.addEventListener("click", () => {
+            stellDiagramSelectedKeys.clear();
+            redrawStellationDiagram();
+            disposeStellationDiagramSelection3D();
+        });
+    refreshStellationSectionState();
     speedSlider.addEventListener("input", (event) => {
-        currentAnimationDuration = parseInt(event.target.value, 10);
+        const raw = parseInt(event.target.value, 10);
+        const min = Number(speedSlider.min) || 10;
+        const max = Number(speedSlider.max) || 4000;
+        currentAnimationDuration = Math.min(
+            max,
+            Math.max(min, Number.isFinite(raw) ? raw : min),
+        );
         speedValueSpan.textContent = `${currentAnimationDuration} ms`;
     });
     toggleNormalsCheckbox.addEventListener(
@@ -1295,6 +1527,12 @@ function init() {
             darkCanvasCheckbox.checked ? "true" : "false",
         );
     });
+    document
+        .getElementById("translucentStellationsCheckbox")
+        ?.addEventListener("change", () => {
+            rebuildStellationUniformCapsIfNeeded();
+            rebuildStellationDiagramSelection3D();
+        });
     netFileInput.addEventListener("change", handleFileSelect);
     exportObjButton?.addEventListener("click", exportOBJ);
     exportPngButton?.addEventListener("click", exportPNGTransparent);
@@ -1694,11 +1932,13 @@ function init() {
 // --- Function to Load Net Data from JSON ---
 function loadAndProcessNet(netData, options = {}) {
     const allowUnknownSignature = options.allowUnknownSignature === true;
+    /** Trophies only when folding nets earned outside the preset dropdown (scratch build or JSON file). */
+    const trophyEligible = options.trophyEligible === true;
     isFolded = false;
     isAnimating = false;
     isPaused = false;
     currentAnimationStage = 0;
-    foldButton.textContent = "Fold";
+    foldButton.textContent = "Animated Fold";
     pauseButton.disabled = true;
 
     try {
@@ -1733,7 +1973,7 @@ function loadAndProcessNet(netData, options = {}) {
                 );
             }
             console.warn(
-                `[Custom net] Signature "${signature}" has no fold table — trial Fold uses guessed angles; click Unfold after.`,
+                `[Custom net] Signature "${signature}" has no fold table — trial Animated Fold uses guessed angles; click Unfold after.`,
             );
             currentFoldAngles = null;
             currentNetName = netData.description || "Custom net";
@@ -1754,13 +1994,11 @@ function loadAndProcessNet(netData, options = {}) {
         createNetFromData(netData);
         lastLoadedNetData = JSON.parse(JSON.stringify(netData));
 
-        if (isNetBuilderActive && builderSessionFromScratch) {
-            pendingScratchTrophyKey = getVertexConfigKeyForNetData(netData);
-        } else {
-            pendingScratchTrophyKey = null;
-        }
+        const trophyPendingKey = getVertexConfigKeyForNetData(netData);
+        pendingScratchTrophyKey = trophyEligible ? trophyPendingKey : null;
 
         setInfoLayoutStatus();
+        if (trophyPreviewGoldActive) applyTrophyPreviewGold(true);
     } catch (error) {
         console.error("Failed to process net data:", error);
         alert(`Error processing net data: ${error.message}. Check console.`);
@@ -1793,7 +2031,10 @@ function handleFileSelect(event) {
                 return;
             }
             exitNetBuilder();
-            loadAndProcessNet(netData, { allowUnknownSignature: true });
+            loadAndProcessNet(netData, {
+                allowUnknownSignature: true,
+                trophyEligible: true,
+            });
         } catch (error) {
             console.error("Error loading net JSON file:", error);
             alert(`Could not load net file: ${error.message}`);
@@ -1812,6 +2053,19 @@ function handleFileSelect(event) {
 // --- Function to clear existing net geometry ---
 function clearSceneGeometry() {
     console.log("Clearing existing net geometry...");
+    disposeStellationCaps();
+    disposeStellationDiagramSelection3D();
+    stellDiagramSelectedKeys.clear();
+    stellDiagramPickState = null;
+    stellDiagramPointerInside = false;
+    stellDiagramViewZoom = 1;
+    stellDiagramViewPanU = 0;
+    stellDiagramViewPanV = 0;
+    stellDiagramViewLastPolyKey = null;
+    stellDiagramPanActive = false;
+    stellDiagramPanPointerId = null;
+    const _stellDiagCv = document.getElementById("stellationDiagramCanvas");
+    if (_stellDiagCv) _stellDiagCv.style.cursor = "";
     Object.keys(pivots).forEach((key) => {
         const pivot = pivots[key];
         if (!pivot) return;
@@ -1852,7 +2106,7 @@ function clearSceneGeometry() {
     pivotsInCurrentStage = [];
     startQuaternions = {};
     targetQuaternions = {};
-    if (foldButton) foldButton.textContent = "Fold";
+    if (foldButton) foldButton.textContent = "Animated Fold";
     if (pauseButton) pauseButton.disabled = true;
     console.log("Clear complete.");
     refreshFoldControlState();
@@ -1923,7 +2177,6 @@ function playFoldSuccessChime() {
 
 function tryScratchFoldTrophyReward() {
     if (!pendingScratchTrophyKey || !currentFoldAngles) return;
-    if (!isNetBuilderActive || !builderSessionFromScratch) return;
     const data = builderNetData || lastLoadedNetData;
     if (!data) return;
     const k = getVertexConfigKeyForNetData(data);
@@ -2025,7 +2278,7 @@ function setInfoLayoutStatus() {
             : "";
     infoDisplay.textContent =
         NUM_ANIMATION_STAGES >= 1
-            ? `Layout: ${currentNetName}${runs} · no fold table — try Fold for a trial (guessed angles), then Unfold`
+            ? `Layout: ${currentNetName}${runs} · no fold table — try Animated Fold for a trial (guessed angles), then Unfold`
             : `Layout: ${currentNetName} · folding unavailable`;
 }
 
@@ -2058,18 +2311,27 @@ function refreshFoldControlState() {
         const hasNet = Boolean(f1Mesh);
         const canFoldOrTrial =
             Boolean(currentFoldAngles) || canTrialFoldLayout();
+        const instantTitleWhenReady =
+            "Jump to the fully folded shape in one step (no hinge animation).";
+        const setInstantFoldUi = (disabled, title) => {
+            if (!instantFoldButton) return;
+            instantFoldButton.disabled = disabled;
+            instantFoldButton.title = title;
+        };
         if (!hasNet) {
             foldButton.disabled = true;
             foldButton.title =
                 "Load a preset, a JSON file, or create a net from the Net panel.";
-            foldButton.textContent = "Fold";
+            foldButton.textContent = "Animated Fold";
+            setInstantFoldUi(true, "");
             return;
         }
         if (!canFoldOrTrial) {
             foldButton.disabled = true;
             foldButton.title =
                 "Add attached faces in the builder (or load a net with connections) to try folding.";
-            foldButton.textContent = "Fold";
+            foldButton.textContent = "Animated Fold";
+            setInstantFoldUi(true, "");
             return;
         }
         if (trialFoldPauseActive) {
@@ -2078,11 +2340,15 @@ function refreshFoldControlState() {
             foldButton.title =
                 "Return to the flat net (guessed fold didn’t match any known solid).";
             if (pauseButton) pauseButton.disabled = true;
+            setInstantFoldUi(
+                true,
+                "Not available during trial pause — use Unfold first.",
+            );
             return;
         }
         foldButton.disabled = false;
         foldButton.title = canTrialFoldLayout()
-            ? "Trial fold: guessed angles for every hinge; when it stops, click Unfold to flatten (no fold table for this layout)."
+            ? "Animated trial fold: guessed angles for every hinge; when it stops, click Unfold to flatten (no fold table for this layout)."
             : "";
         const foldingForward =
             isAnimating &&
@@ -2092,10 +2358,1482 @@ function refreshFoldControlState() {
         let showUnfoldLabel = isFolded;
         if (foldingForward) showUnfoldLabel = true;
         if (unfoldingAnim) showUnfoldLabel = false;
-        foldButton.textContent = showUnfoldLabel ? "Unfold" : "Fold";
+        foldButton.textContent = showUnfoldLabel ? "Unfold" : "Animated Fold";
+
+        const allowInstant =
+            !isAnimating && !isFolded;
+        if (allowInstant) {
+            setInstantFoldUi(false, instantTitleWhenReady);
+        } else if (isFolded) {
+            setInstantFoldUi(
+                true,
+                "Already folded. Use Unfold to return to the flat net.",
+            );
+        } else {
+            setInstantFoldUi(
+                true,
+                "Wait for the current animation to finish or press Pause.",
+            );
+        }
     } finally {
         refreshEditNetButtonState();
+        refreshStellationSectionState();
     }
+}
+
+/** Dodecahedron / icosahedron: classical stellation catalogs (Miller-style theory). */
+const STELLATION_ICOSA_DODECA_KEYS = new Set(["3.3.3.3.3", "5.5.5"]);
+/** Face-plane trace diagram: regular dodeca / icosa + rhombic dodecahedron (12 rhombi). */
+const STELLATION_DIAGRAM_POLY_KEYS = new Set([
+    "3.3.3.3.3",
+    "5.5.5",
+    "rhombic-dodecahedron",
+]);
+/** Replicate diagram picks as 3D panels on every equivalent face (face-transitive facets). */
+const STELLATION_DIAGRAM_REPLICATE_ALL_FACES_KEYS = new Set([
+    "3.3.3.3.3",
+    "5.5.5",
+    "rhombic-dodecahedron",
+]);
+/** Snub Archimedean: some stellation art, not the classic Miller zoo. */
+const STELLATION_SNUB_KEYS = new Set(["3.3.3.3.4", "3.3.3.3.5"]);
+
+function refreshStellationSectionState() {
+    const sec = document.getElementById("stellationSection");
+    const sel = document.getElementById("stellationPresetSelect");
+    const hint = document.getElementById("stellationPolyHint");
+    const lockMsg = document.getElementById("stellationLockedNote");
+    if (!sec) return;
+
+    const hasNet = Boolean(f1Mesh);
+    const folded = isFolded;
+    const busy = isAnimating;
+    const unlock = hasNet && folded && !busy;
+
+    const stellationPolyKey =
+        unlock && lastLoadedNetData
+            ? getVertexConfigKeyForNetData(lastLoadedNetData)
+            : null;
+
+    sec.classList.toggle("stellation-section--locked", !unlock);
+    sec.setAttribute("aria-disabled", unlock ? "false" : "true");
+
+    if (sel) {
+        sel.disabled = !unlock;
+        if (!unlock) sel.value = "off";
+        else if (
+            sel.value === "diagram" &&
+            (!stellationPolyKey ||
+                !STELLATION_DIAGRAM_POLY_KEYS.has(stellationPolyKey))
+        )
+            sel.value = "off";
+    }
+
+    if (lockMsg) {
+        lockMsg.hidden = unlock;
+        if (!unlock) {
+            if (!hasNet) lockMsg.textContent = "Load a net first.";
+            else if (busy)
+                lockMsg.textContent =
+                    "Wait for folding or unfolding to finish.";
+            else if (!folded)
+                lockMsg.textContent =
+                    "Fully fold the solid to enable stellation tools.";
+        }
+    }
+
+    if (hint) {
+        if (!unlock) {
+            hint.textContent = "";
+            hint.hidden = true;
+        } else {
+            let t = "";
+            if (
+                stellationPolyKey &&
+                STELLATION_ICOSA_DODECA_KEYS.has(stellationPolyKey)
+            ) {
+                t =
+                    "This solid supports the richest classical stellation families (e.g. icosahedral Miller set, Kepler–Poinsot relatives). Use Stellation diagram to see where other face planes cut one reference face.";
+            } else if (stellationPolyKey && STELLATION_SNUB_KEYS.has(stellationPolyKey)) {
+                t =
+                    "Snub solids have less standard stellation theory than the dodecahedron / icosahedron; sculptural modes may fit better.";
+            } else if (stellationPolyKey === "rhombic-dodecahedron") {
+                t =
+                    "Rhombic dodecahedron (Catalan): twelve congruent rhombic faces. Use Stellation diagram to see where the other face planes cut one rhombus—the same face-plane trace idea as for the Platonic solids, though the classical Miller catalog is dodeca/icosa-centric.";
+            } else if (stellationPolyKey) {
+                t =
+                    "Classical stellation is most storied on the dodecahedron and icosahedron; other solids often have no standard catalog. Uniform pyramids on every face still works for any folded net.";
+            }
+            hint.textContent = t;
+            hint.hidden = !t;
+        }
+    }
+
+    const wrap = document.getElementById("stellationDiagramWrap");
+    const cap = document.getElementById("stellationDiagramCaption");
+    const selVal = sel?.value ?? "off";
+    const showDiagram =
+        unlock &&
+        selVal === "diagram" &&
+        stellationPolyKey &&
+        STELLATION_DIAGRAM_POLY_KEYS.has(stellationPolyKey);
+    if (wrap) wrap.hidden = !showDiagram;
+    if (cap) {
+        if (showDiagram) {
+            const pickHint =
+                " Click a region to toggle it (pointer over selectable cells). Wheel zooms toward the cursor; middle-drag or Alt+drag pans. The same pick is mirrored on every equivalent face in 3D. Clear removes all picks.";
+            if (stellationPolyKey === "5.5.5") {
+                cap.textContent =
+                    "Classical-style diagram (see Wikipedia: Stellation diagram): traces of every other face plane in this plane, framed for the outer star pattern." +
+                    pickHint;
+            } else if (stellationPolyKey === "rhombic-dodecahedron") {
+                cap.textContent =
+                    "One rhombic face: traces of the other eleven face planes (wide framing)." +
+                    pickHint;
+            } else {
+                cap.textContent =
+                    "Icosahedron face-plane traces (wide framing)." + pickHint;
+            }
+        } else cap.textContent = "";
+    }
+    if (showDiagram) redrawStellationDiagram();
+    else {
+        clearStellationDiagramCanvas();
+        disposeStellationDiagramSelection3D();
+        stellDiagramSelectedKeys.clear();
+        stellDiagramPickState = null;
+        stellDiagramPointerInside = false;
+        stellDiagramViewZoom = 1;
+        stellDiagramViewPanU = 0;
+        stellDiagramViewPanV = 0;
+        stellDiagramViewLastPolyKey = null;
+        stellDiagramPanActive = false;
+        stellDiagramPanPointerId = null;
+        stellDiagramSuppressNextClick = false;
+        const dc = document.getElementById("stellationDiagramCanvas");
+        if (dc) dc.style.cursor = "";
+    }
+
+    const capsRow = document.getElementById("stellationCapsRow");
+    const showCaps = unlock && selVal === "uniform-caps";
+    if (capsRow) capsRow.hidden = !showCaps;
+    if (showCaps) {
+        refreshStellationCapHeightLabel();
+        rebuildStellationUniformCapsIfNeeded();
+    } else disposeStellationCaps();
+}
+
+function refreshStellationCapHeightLabel() {
+    const slider = document.getElementById("stellationCapHeightSlider");
+    const span = document.getElementById("stellationCapHeightValue");
+    if (!slider || !span) return;
+    const v = parseInt(slider.value, 10);
+    span.textContent = `${Number.isFinite(v) ? v : 0}%`;
+}
+
+function disposeStellationCaps() {
+    if (!stellationCapsGroup || !scene) return;
+    stellationCapsGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+    });
+    scene.remove(stellationCapsGroup);
+    stellationCapsGroup = null;
+}
+
+function getFaceColorHexForStellation(faceId) {
+    if (faceId === 1 && f1Mesh?.userData?.faceColorHex != null)
+        return f1Mesh.userData.faceColorHex;
+    const pivot = pivots[faceId];
+    if (!pivot) return 0x888888;
+    for (let i = 0; i < pivot.children.length; i++) {
+        const ch = pivot.children[i];
+        if (ch.isMesh && ch.userData?.faceColorHex != null)
+            return ch.userData.faceColorHex;
+    }
+    return 0x888888;
+}
+
+/**
+ * Cyclic order of coplanar boundary vertices, CCW when viewed along outward normal.
+ * @param {THREE.Vector3[]} worldVerts
+ * @param {THREE.Vector3} outwardNormal unit
+ */
+function orderFaceBoundaryVerticesWorld(worldVerts, outwardNormal) {
+    const n = outwardNormal.clone().normalize();
+    const c = calculateWorldCentroid(worldVerts);
+    const t1 = new THREE.Vector3();
+    const t2 = new THREE.Vector3();
+    let e0 = t1.subVectors(worldVerts[0], c);
+    e0.sub(t2.copy(n).multiplyScalar(e0.dot(n)));
+    if (e0.lengthSq() < 1e-12) {
+        e0.subVectors(worldVerts[1], c);
+        e0.sub(t2.copy(n).multiplyScalar(e0.dot(n)));
+    }
+    e0.normalize();
+    const e1 = new THREE.Vector3().crossVectors(n, e0).normalize();
+    const scored = worldVerts.map((w) => {
+        const d = new THREE.Vector3().subVectors(w, c);
+        return {
+            w,
+            ang: Math.atan2(d.dot(e1), d.dot(e0)),
+        };
+    });
+    scored.sort((a, b) => a.ang - b.ang);
+    return scored.map((s) => s.w);
+}
+
+function meanEdgeLengthOrdered(orderedVerts) {
+    const n = orderedVerts.length;
+    if (n < 2) return 0;
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+        sum += orderedVerts[i].distanceTo(orderedVerts[(i + 1) % n]);
+    }
+    return sum / n;
+}
+
+function computeStellationGlobalMeanEdgeLength() {
+    const interior = computeSolidCentroidWorld();
+    const t = new THREE.Vector3();
+    let total = 0;
+    let count = 0;
+    for (const key of Object.keys(allVertices)) {
+        const fid = parseInt(key, 10);
+        if (Number.isNaN(fid)) continue;
+        const wv = getMeshWorldVertices(fid);
+        if (!wv || wv.length < 3) continue;
+        let nrm = calculateWorldNormalRobust(wv);
+        const cen = calculateWorldCentroid(wv);
+        if (interior && nrm.dot(t.copy(cen).sub(interior)) < 0) nrm = nrm.clone().negate();
+        const ordered = orderFaceBoundaryVerticesWorld(wv, nrm);
+        total += meanEdgeLengthOrdered(ordered);
+        count++;
+    }
+    return count > 0 ? total / count : sideLength;
+}
+
+function rebuildStellationUniformCapsIfNeeded() {
+    const sel = document.getElementById("stellationPresetSelect")?.value;
+    if (
+        sel !== "uniform-caps" ||
+        !isFolded ||
+        isAnimating ||
+        !scene ||
+        !f1Mesh
+    ) {
+        disposeStellationCaps();
+        return;
+    }
+    const slider = document.getElementById("stellationCapHeightSlider");
+    const pctRaw = parseInt(slider?.value, 10);
+    const pct = Math.min(
+        100,
+        Math.max(0, Number.isFinite(pctRaw) ? pctRaw : 0),
+    );
+    const relativeHeight = pct / 100;
+    disposeStellationCaps();
+    if (relativeHeight < 1e-5) return;
+
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    const interior = computeSolidCentroidWorld();
+    const t = new THREE.Vector3();
+    const globalMeanEdge = computeStellationGlobalMeanEdgeLength();
+    const capHeight = relativeHeight * globalMeanEdge;
+
+    stellationCapsGroup = new THREE.Group();
+    stellationCapsGroup.name = "stellationUniformCaps";
+
+    for (const key of Object.keys(allVertices)) {
+        const fid = parseInt(key, 10);
+        if (Number.isNaN(fid)) continue;
+        const wv = getMeshWorldVertices(fid);
+        if (!wv || wv.length < 3) continue;
+
+        let nrm = calculateWorldNormalRobust(wv);
+        const cen = calculateWorldCentroid(wv);
+        if (interior && nrm.dot(t.copy(cen).sub(interior)) < 0) nrm = nrm.clone().negate();
+
+        const ordered = orderFaceBoundaryVerticesWorld(wv, nrm);
+        const apex = nrm.clone().multiplyScalar(capHeight).add(cen);
+        const nv = ordered.length;
+        const pos = [];
+        for (let i = 0; i < nv; i++) {
+            const a = ordered[i];
+            const b = ordered[(i + 1) % nv];
+            pos.push(apex.x, apex.y, apex.z, a.x, a.y, a.z, b.x, b.y, b.z);
+        }
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute(
+            "position",
+            new THREE.Float32BufferAttribute(pos, 3),
+        );
+        geom.computeVertexNormals();
+
+        const colorHex = getFaceColorHexForStellation(fid);
+        const mat = createFaceMaterial(colorHex, mode);
+        applyTranslucentStellationSurfaceMaterial(mat);
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.userData.isStellationCap = true;
+        mesh.userData.faceId = fid;
+        stellationCapsGroup.add(mesh);
+    }
+
+    scene.add(stellationCapsGroup);
+}
+
+/** Average of face centroids in world space (lightweight solid interior point). */
+function computeSolidCentroidWorld() {
+    const sum = new THREE.Vector3();
+    let n = 0;
+    for (const key of Object.keys(allVertices)) {
+        const fid = parseInt(key, 10);
+        if (Number.isNaN(fid)) continue;
+        const wv = getMeshWorldVertices(fid);
+        if (!wv || wv.length < 3) continue;
+        sum.add(calculateWorldCentroid(wv));
+        n++;
+    }
+    return n > 0 ? sum.divideScalar(n) : null;
+}
+
+/**
+ * Line of intersection of two planes (Three.js: normal·x + constant = 0).
+ * @param {THREE.Plane} planeA
+ * @param {THREE.Plane} planeB
+ * @param {THREE.Vector3} outOrigin
+ * @param {THREE.Vector3} outDir unit direction along the line
+ * @returns {boolean}
+ */
+function intersectPlanesLine(planeA, planeB, outOrigin, outDir) {
+    const n1 = planeA.normal;
+    const n2 = planeB.normal;
+    const d1 = -planeA.constant;
+    const d2 = -planeB.constant;
+    outDir.crossVectors(n1, n2);
+    const lenSq = outDir.lengthSq();
+    if (lenSq < 1e-20) return false;
+    const t1 = _stellTmpA.crossVectors(n2, outDir).multiplyScalar(d1);
+    const t2 = _stellTmpB.crossVectors(outDir, n1).multiplyScalar(d2);
+    outOrigin.copy(t1).add(t2).divideScalar(lenSq);
+    outDir.normalize();
+    return true;
+}
+
+const _stellTmpA = new THREE.Vector3();
+const _stellTmpB = new THREE.Vector3();
+const _stellTmpC = new THREE.Vector3();
+const _stellTmpD = new THREE.Vector3();
+const _stellProjOnPlane = new THREE.Vector3();
+
+/**
+ * Clip infinite 2D line P = O + t D against convex polygon (CCW), return t interval or null.
+ * @param {{ u: number, v: number }} O
+ * @param {{ u: number, v: number }} D
+ * @param {{ u: number, v: number }[]} poly
+ */
+function clipInfiniteLineToConvexPolygon2D(O, D, poly) {
+    const cross2 = (ex, ey, px, py) => ex * py - ey * px;
+    let tMin = -Infinity;
+    let tMax = Infinity;
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+        const A = poly[i];
+        const B = poly[(i + 1) % n];
+        const ex = B.u - A.u;
+        const ey = B.v - A.v;
+        const w = cross2(ex, ey, O.u - A.u, O.v - A.v);
+        const c = cross2(ex, ey, D.u, D.v);
+        if (Math.abs(c) < 1e-9) {
+            if (w < 0) return null;
+            continue;
+        }
+        const t = -w / c;
+        if (c > 0) tMin = Math.max(tMin, t);
+        else tMax = Math.min(tMax, t);
+    }
+    if (tMin > tMax) return null;
+    return { t0: tMin, t1: tMax };
+}
+
+function makeFacePlaneWorld(faceId, interiorHint) {
+    const wv = getMeshWorldVertices(faceId);
+    if (!wv || wv.length < 3) return null;
+    const c = calculateWorldCentroid(wv);
+    let n = calculateWorldNormalRobust(wv);
+    const interior = interiorHint ?? computeSolidCentroidWorld();
+    if (interior && n.dot(_stellTmpC.copy(c).sub(interior)) < 0) n.negate();
+    const plane = new THREE.Plane();
+    plane.setFromNormalAndCoplanarPoint(n, c);
+    return plane;
+}
+
+function findReferenceFaceIdForStellationDiagram(expectedSides) {
+    for (const key of Object.keys(allVertices)) {
+        const fid = parseInt(key, 10);
+        if (Number.isNaN(fid)) continue;
+        const spec = allVertices[key];
+        const ns = spec?.numSides ?? spec?.length;
+        if (ns !== expectedSides) continue;
+        const wv = getMeshWorldVertices(fid);
+        if (wv && wv.length >= 3) return fid;
+    }
+    return null;
+}
+
+function orderConvexFacePolygon2D(refVerts, refCentroid, refNormal) {
+    const e0 = _stellTmpC.subVectors(refVerts[1], refVerts[0]);
+    e0.sub(_stellTmpA.copy(refNormal).multiplyScalar(e0.dot(refNormal)));
+    if (e0.lengthSq() < 1e-12) {
+        e0.subVectors(refVerts[2], refVerts[0]);
+        e0.sub(_stellTmpA.copy(refNormal).multiplyScalar(e0.dot(refNormal)));
+    }
+    e0.normalize();
+    const v0 = _stellTmpD.crossVectors(refNormal, e0).normalize();
+    const pts = refVerts.map((w) => {
+        const d = new THREE.Vector3().subVectors(w, refCentroid);
+        return { u: d.dot(e0), v: d.dot(v0) };
+    });
+    let cx = 0;
+    let cy = 0;
+    for (const p of pts) {
+        cx += p.u;
+        cy += p.v;
+    }
+    cx /= pts.length;
+    cy /= pts.length;
+    const withAng = pts.map((p) => ({
+        u: p.u,
+        v: p.v,
+        ang: Math.atan2(p.v - cy, p.u - cx),
+    }));
+    withAng.sort((a, b) => a.ang - b.ang);
+    const poly = withAng.map(({ u, v }) => ({ u, v }));
+    let area = 0;
+    const m = poly.length;
+    for (let i = 0; i < m; i++) {
+        const p = poly[i];
+        const q = poly[(i + 1) % m];
+        area += p.u * q.v - p.v * q.u;
+    }
+    if (area < 0) poly.reverse();
+    return { poly2d: poly, uAxis: e0.clone(), vAxis: _stellTmpD.clone() };
+}
+
+function listFaceIdsWithNSides(expectedSides) {
+    const out = [];
+    for (const key of Object.keys(allVertices)) {
+        const fid = parseInt(key, 10);
+        if (Number.isNaN(fid)) continue;
+        const spec = allVertices[key];
+        const ns = spec?.numSides ?? spec?.length;
+        if (ns !== expectedSides) continue;
+        const wv = getMeshWorldVertices(fid);
+        if (wv && wv.length >= 3) out.push(fid);
+    }
+    out.sort((a, b) => a - b);
+    return out;
+}
+
+function stellBoundaryWorldFromPoly2d(c, uAxis, vAxis, poly2d) {
+    const n = poly2d.length;
+    const arr = new Array(n);
+    for (let i = 0; i < n; i++) {
+        const p = poly2d[i];
+        arr[i] = new THREE.Vector3()
+            .copy(uAxis)
+            .multiplyScalar(p.u)
+            .add(_stellTmpA.copy(vAxis).multiplyScalar(p.v))
+            .add(c);
+    }
+    return arr;
+}
+
+function stellComputeFrameForStellationFace(faceId, interior) {
+    const wv = getMeshWorldVertices(faceId);
+    if (!wv || wv.length < 3) return null;
+    const c = calculateWorldCentroid(wv);
+    let n = calculateWorldNormalRobust(wv);
+    if (interior && n.dot(_stellTmpA.copy(c).sub(interior)) < 0) n.negate();
+    const { poly2d, uAxis, vAxis } = orderConvexFacePolygon2D(wv, c, n);
+    return { faceId, c, n, uAxis, vAxis, poly2d };
+}
+
+/**
+ * Rigid map taking reference face boundary W (CCW) onto target boundary T; returns
+ * quaternion q with x' = cT + q * (x - c0) for x on the reference plane.
+ */
+function stellQuaternionMapReferenceFaceBoundaryToTarget(W, n0, c0, T, nT, cT) {
+    const n = W.length;
+    if (n < 2 || T.length !== n) return null;
+    const qAlignN = new THREE.Quaternion();
+    const qTwist = new THREE.Quaternion();
+    const qComb = new THREE.Quaternion();
+    const qBest = new THREE.Quaternion();
+    let bestErr = Infinity;
+    const eW = new THREE.Vector3();
+    const eT = new THREE.Vector3();
+    const eWp = new THREE.Vector3();
+    const test = new THREE.Vector3();
+    const cTmp = new THREE.Vector3();
+
+    for (let s = 0; s < n; s++) {
+        qAlignN.setFromUnitVectors(n0, nT);
+        eW.subVectors(W[1], W[0]).normalize();
+        eT.subVectors(T[(s + 1) % n], T[s]).normalize();
+        eWp.copy(eW).applyQuaternion(qAlignN);
+        const twist = Math.atan2(
+            cTmp.copy(eWp).cross(eT).dot(nT),
+            THREE.MathUtils.clamp(eWp.dot(eT), -1, 1),
+        );
+        qTwist.setFromAxisAngle(nT, twist);
+        qComb.copy(qTwist).multiply(qAlignN);
+        let err = 0;
+        for (let i = 0; i < n; i++) {
+            test.copy(W[i]).sub(c0).applyQuaternion(qComb).add(cT);
+            err += test.distanceToSquared(T[(i + s) % n]);
+        }
+        if (err < bestErr) {
+            bestErr = err;
+            qBest.copy(qComb);
+        }
+    }
+    return { q: qBest.clone(), err: bestErr };
+}
+
+/**
+ * Classical stellation diagrams clip infinite traces to a bounded window around the
+ * face (see e.g. Coxeter / Miller figures and
+ * https://en.wikipedia.org/wiki/Stellation_diagram ).
+ * @param {{ u: number, v: number }[]} facePoly2d
+ * @param {number} marginFactor — half-size of axis-aligned clip vs max radius to centroid
+ */
+function makeStellationDiagramClipWindow2D(facePoly2d, marginFactor) {
+    let cx = 0;
+    let cy = 0;
+    const n = facePoly2d.length;
+    for (let i = 0; i < n; i++) {
+        cx += facePoly2d[i].u;
+        cy += facePoly2d[i].v;
+    }
+    cx /= n;
+    cy /= n;
+    let r = 0;
+    for (let i = 0; i < n; i++) {
+        const p = facePoly2d[i];
+        r = Math.max(r, Math.hypot(p.u - cx, p.v - cy));
+    }
+    r = Math.max(r, 1e-9);
+    const h = r * marginFactor;
+    return [
+        { u: cx - h, v: cy - h },
+        { u: cx + h, v: cy - h },
+        { u: cx + h, v: cy + h },
+        { u: cx - h, v: cy + h },
+    ];
+}
+
+const STELL_EPS = 1e-9;
+const STELL_KEY_PREC = 6;
+
+function stellPtKey(u, v) {
+    return `${u.toFixed(STELL_KEY_PREC)},${v.toFixed(STELL_KEY_PREC)}`;
+}
+
+function stellSegIntersectInterior(a0, a1, b0, b1) {
+    const rx = a1.u - a0.u;
+    const ry = a1.v - a0.v;
+    const sx = b1.u - b0.u;
+    const sy = b1.v - b0.v;
+    const denom = rx * sy - ry * sx;
+    if (Math.abs(denom) < 1e-14) return null;
+    const qpx = b0.u - a0.u;
+    const qpy = b0.v - a0.v;
+    const t = (qpx * sy - qpy * sx) / denom;
+    const uu = (qpx * ry - qpy * rx) / denom;
+    if (t > STELL_EPS && t < 1 - STELL_EPS && uu > STELL_EPS && uu < 1 - STELL_EPS)
+        return t;
+    return null;
+}
+
+function stellSubdivideSegmentArray(rawSegs) {
+    const out = [];
+    for (let i = 0; i < rawSegs.length; i++) {
+        const seg = rawSegs[i];
+        const cuts = new Set([0, 1]);
+        for (let j = 0; j < rawSegs.length; j++) {
+            if (i === j) continue;
+            const t = stellSegIntersectInterior(
+                seg.p0,
+                seg.p1,
+                rawSegs[j].p0,
+                rawSegs[j].p1,
+            );
+            if (t != null) cuts.add(t);
+        }
+        const arr = [...cuts].sort((a, b) => a - b);
+        for (let k = 0; k < arr.length - 1; k++) {
+            const t0 = arr[k];
+            const t1 = arr[k + 1];
+            if (t1 - t0 < STELL_EPS) continue;
+            const p0 = {
+                u: seg.p0.u + t0 * (seg.p1.u - seg.p0.u),
+                v: seg.p0.v + t0 * (seg.p1.v - seg.p0.v),
+            };
+            const p1 = {
+                u: seg.p0.u + t1 * (seg.p1.u - seg.p0.u),
+                v: seg.p0.v + t1 * (seg.p1.v - seg.p0.v),
+            };
+            const du = p1.u - p0.u;
+            const dv = p1.v - p0.v;
+            if (du * du + dv * dv > STELL_EPS * STELL_EPS) out.push({ p0, p1 });
+        }
+    }
+    return out;
+}
+
+function stellDedupeUndirectedEdges(segs) {
+    const seen = new Set();
+    const uniq = [];
+    for (const s of segs) {
+        const k0 = stellPtKey(s.p0.u, s.p0.v);
+        const k1 = stellPtKey(s.p1.u, s.p1.v);
+        const a = k0 < k1 ? k0 : k1;
+        const b = k0 < k1 ? k1 : k0;
+        const key = `${a}|${b}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        uniq.push(s);
+    }
+    return uniq;
+}
+
+function stellBuildAdjacency(segs) {
+    const pos = new Map();
+    const addPt = (p) => {
+        const k = stellPtKey(p.u, p.v);
+        if (!pos.has(k)) pos.set(k, { u: p.u, v: p.v, key: k });
+        return k;
+    };
+    const adj = new Map();
+    const link = (ka, kb) => {
+        if (!adj.has(ka)) adj.set(ka, []);
+        if (!adj.has(kb)) adj.set(kb, []);
+        if (!adj.get(ka).includes(kb)) adj.get(ka).push(kb);
+        if (!adj.get(kb).includes(ka)) adj.get(kb).push(ka);
+    };
+    for (const s of segs) {
+        const ka = addPt(s.p0);
+        const kb = addPt(s.p1);
+        link(ka, kb);
+    }
+    return { adj, pos };
+}
+
+function stellNextVertexLeftFace(uKey, vKey, adj, pos) {
+    const V = pos.get(vKey);
+    const nks = adj.get(vKey);
+    if (!nks || nks.length < 2) return null;
+    const sorted = nks.slice().sort((ka, kb) => {
+        const A = pos.get(ka);
+        const B = pos.get(kb);
+        return (
+            Math.atan2(A.v - V.v, A.u - V.u) -
+            Math.atan2(B.v - V.v, B.u - V.u)
+        );
+    });
+    const idx = sorted.indexOf(uKey);
+    if (idx < 0) return null;
+    const ni = (idx - 1 + sorted.length) % sorted.length;
+    return sorted[ni];
+}
+
+function stellPolygonSignedArea(verts) {
+    let a = 0;
+    const n = verts.length;
+    for (let i = 0; i < n; i++) {
+        const p = verts[i];
+        const q = verts[(i + 1) % n];
+        a += p.u * q.v - p.v * q.u;
+    }
+    return a * 0.5;
+}
+
+function stellFaceSignature(verts) {
+    const keys = verts.map((p) => stellPtKey(p.u, p.v));
+    let best = keys.join(",");
+    const m = keys.length;
+    for (let s = 1; s < m; s++) {
+        const rot = [...keys.slice(s), ...keys.slice(0, s)].join(",");
+        if (rot < best) best = rot;
+    }
+    const rev = [...keys].reverse();
+    let bestR = rev.join(",");
+    for (let s = 1; s < m; s++) {
+        const rot = [...rev.slice(s), ...rev.slice(0, s)].join(",");
+        if (rot < bestR) bestR = rot;
+    }
+    return best < bestR ? best : bestR;
+}
+
+/**
+ * Unique selection id per cell: sorted vertex list at 14 decimals. Cycle signatures
+ * from stellFaceSignature can still collide when distinct corners share the same 6-dec
+ * stellPtKey (e.g. two triangles in one rhombus on the rhombic dodecahedron diagram).
+ */
+function stellRegionStableSelectionKey(poly) {
+    return poly
+        .map((p) => `${p.u.toFixed(14)},${p.v.toFixed(14)}`)
+        .sort()
+        .join(";");
+}
+
+function stellEnumerateFaces(adj, pos) {
+    const used = new Set();
+    const badStart = new Set();
+    const faces = [];
+    const seenSig = new Set();
+    for (const uKey of adj.keys()) {
+        for (const vKey of adj.get(uKey)) {
+            const start = `${uKey}|${vKey}`;
+            if (used.has(start) || badStart.has(start)) continue;
+            const poly = [];
+            const trial = [];
+            let u = uKey;
+            let v = vKey;
+            let guard = 0;
+            let closed = false;
+            while (guard++ < 8000) {
+                const d = `${u}|${v}`;
+                if (used.has(d)) break;
+                trial.push(d);
+                const P = pos.get(v);
+                poly.push({ u: P.u, v: P.v });
+                const w = stellNextVertexLeftFace(u, v, adj, pos);
+                if (!w) break;
+                u = v;
+                v = w;
+                if (u === uKey && v === vKey) {
+                    closed = true;
+                    break;
+                }
+            }
+            if (closed && poly.length >= 3) {
+                const sig = stellFaceSignature(poly);
+                if (!seenSig.has(sig)) {
+                    seenSig.add(sig);
+                    faces.push(poly);
+                }
+                for (const t of trial) used.add(t);
+            } else {
+                badStart.add(start);
+            }
+        }
+    }
+    return faces;
+}
+
+function stellPointInPolygon(u, v, poly) {
+    let inside = false;
+    const n = poly.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const pi = poly[i];
+        const pj = poly[j];
+        const intersect =
+            pi.v > v !== pj.v > v &&
+            u <
+                ((pj.u - pi.u) * (v - pi.v)) / (pj.v - pi.v + STELL_EPS) +
+                    pi.u;
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+/**
+ * Build elementary regions from face outline, clip window, and trace segments.
+ * @returns {{ regions: { id: number, verts: {u:number,v:number}[], centroidKey: string }[], clipArea: number }}
+ * (centroidKey is stellRegionStableSelectionKey — sorted high-precision vertices, not a centroid.)
+ */
+function buildStellationDiagramRegions(poly2d, clipPoly2d, traceSegments) {
+    const raw = [];
+    const addLoop = (loop) => {
+        const m = loop.length;
+        for (let i = 0; i < m; i++) {
+            const a = loop[i];
+            const b = loop[(i + 1) % m];
+            raw.push({ p0: { u: a.u, v: a.v }, p1: { u: b.u, v: b.v } });
+        }
+    };
+    addLoop(poly2d);
+    addLoop(clipPoly2d);
+    for (const s of traceSegments) {
+        raw.push({
+            p0: { u: s.u0, v: s.v0 },
+            p1: { u: s.u1, v: s.v1 },
+        });
+    }
+    const subdiv = stellSubdivideSegmentArray(raw);
+    const dedup = stellDedupeUndirectedEdges(subdiv);
+    const { adj, pos } = stellBuildAdjacency(dedup);
+    const rawFaces = stellEnumerateFaces(adj, pos);
+    const clipArea = Math.abs(stellPolygonSignedArea(clipPoly2d));
+    const regions = [];
+    let id = 0;
+    for (const f of rawFaces) {
+        const area = Math.abs(stellPolygonSignedArea(f));
+        if (area < clipArea * 1e-10) continue;
+        if (area > clipArea * 0.985) continue;
+        const centroidKey = stellRegionStableSelectionKey(f);
+        regions.push({ id: id++, verts: f, centroidKey });
+    }
+    regions.sort((a, b) => a.centroidKey.localeCompare(b.centroidKey));
+    regions.forEach((r, i) => {
+        r.id = i;
+    });
+    return { regions, clipArea };
+}
+
+function stellRemapDiagramSelectionToNewRegions(newRegions) {
+    if (!stellDiagramSelectedKeys.size || !newRegions?.length) return;
+    const oldKeys = [...stellDiagramSelectedKeys];
+    stellDiagramSelectedKeys.clear();
+    for (const ok of oldKeys) {
+        let matched = false;
+        for (const r of newRegions) {
+            if (r.centroidKey === ok) {
+                stellDiagramSelectedKeys.add(ok);
+                matched = true;
+                break;
+            }
+        }
+        if (matched) continue;
+        const parts = ok.split(",");
+        if (parts.length === 2) {
+            const ou = Number(parts[0]);
+            const ov = Number(parts[1]);
+            if (Number.isFinite(ou) && Number.isFinite(ov)) {
+                for (const r of newRegions) {
+                    if (stellPointInPolygon(ou, ov, r.verts)) {
+                        stellDiagramSelectedKeys.add(r.centroidKey);
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        for (const r of newRegions) {
+            if (stellFaceSignature(r.verts) === ok) {
+                stellDiagramSelectedKeys.add(r.centroidKey);
+                break;
+            }
+        }
+    }
+}
+
+function disposeStellationDiagramSelection3D() {
+    if (!stellationDiagramSelectionGroup || !scene) return;
+    stellationDiagramSelectionGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+    });
+    scene.remove(stellationDiagramSelectionGroup);
+    stellationDiagramSelectionGroup = null;
+}
+
+/** Flat panels on each face plane (no normal extrusion / thickness). */
+function addStellationDiagramFlatRegionsForFace(
+    group,
+    regions,
+    selectedKeys,
+    refC,
+    refU,
+    refV,
+    q,
+    targetC,
+    targetN,
+    mode,
+) {
+    const tmpV = new THREE.Vector3();
+    for (const r of regions) {
+        if (!selectedKeys.has(r.centroidKey)) continue;
+        const poly = r.verts;
+        const n = poly.length;
+        if (n < 3) continue;
+        const bases = [];
+        for (let i = 0; i < n; i++) {
+            const p = poly[i];
+            const b = new THREE.Vector3()
+                .copy(refU)
+                .multiplyScalar(p.u)
+                .add(tmpV.copy(refV).multiplyScalar(p.v))
+                .add(refC);
+            b.sub(refC).applyQuaternion(q).add(targetC);
+            bases.push(b);
+        }
+        const pos = [];
+        for (let i = 1; i < n - 1; i++) {
+            pos.push(
+                bases[0].x,
+                bases[0].y,
+                bases[0].z,
+                bases[i + 1].x,
+                bases[i + 1].y,
+                bases[i + 1].z,
+                bases[i].x,
+                bases[i].y,
+                bases[i].z,
+            );
+        }
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute(
+            "position",
+            new THREE.Float32BufferAttribute(pos, 3),
+        );
+        geom.computeVertexNormals();
+        const mat = createFaceMaterial(0xc9a45c, mode);
+        if (mat.emissive !== undefined) {
+            mat.emissive = new THREE.Color(0x332208);
+            mat.emissiveIntensity = 0.32;
+        }
+        applyTranslucentStellationSurfaceMaterial(mat);
+        mat.polygonOffset = true;
+        mat.polygonOffsetFactor = 1;
+        mat.polygonOffsetUnits = 1;
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.userData.isStellationDiagramPick = true;
+        group.add(mesh);
+    }
+}
+
+function rebuildStellationDiagramSelection3D() {
+    disposeStellationDiagramSelection3D();
+    const st = stellDiagramPickState;
+    if (
+        !st ||
+        !isFolded ||
+        isAnimating ||
+        !scene ||
+        stellDiagramSelectedKeys.size === 0 ||
+        !st.regions?.length
+    )
+        return;
+
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+
+    stellationDiagramSelectionGroup = new THREE.Group();
+    stellationDiagramSelectionGroup.name = "stellationDiagramSelection";
+
+    const refC = st.refCentroid;
+    const refU = st.uAxis;
+    const refV = st.vAxis;
+    const n0 = st.refNormal;
+    const idQ = new THREE.Quaternion();
+
+    const replicate = st.replicateDiagramToAllFaces === true;
+    if (!replicate) {
+        idQ.identity();
+        addStellationDiagramFlatRegionsForFace(
+            stellationDiagramSelectionGroup,
+            st.regions,
+            stellDiagramSelectedKeys,
+            refC,
+            refU,
+            refV,
+            idQ,
+            refC,
+            n0,
+            mode,
+        );
+    } else {
+        const polyKey =
+            lastLoadedNetData &&
+            getVertexConfigKeyForNetData(lastLoadedNetData);
+        const expectedSides =
+            polyKey === "5.5.5"
+                ? 5
+                : polyKey === "rhombic-dodecahedron"
+                  ? 4
+                  : 3;
+        const refFaceId =
+            st.referenceFaceId ??
+            findReferenceFaceIdForStellationDiagram(expectedSides);
+        if (refFaceId == null) return;
+
+        const outline = st.refFacePoly2d;
+        if (!outline?.length) return;
+
+        const interior = computeSolidCentroidWorld();
+        const W = stellBoundaryWorldFromPoly2d(refC, refU, refV, outline);
+        const faceIds = listFaceIdsWithNSides(expectedSides);
+        const edgeScale = st.meanRefEdge || sideLength;
+        const tol =
+            W.length * Math.max(1e-10, edgeScale * 0.22) ** 2;
+
+        for (const fid of faceIds) {
+            const tgtFrame = stellComputeFrameForStellationFace(
+                fid,
+                interior,
+            );
+            if (!tgtFrame) continue;
+            const T = stellBoundaryWorldFromPoly2d(
+                tgtFrame.c,
+                tgtFrame.uAxis,
+                tgtFrame.vAxis,
+                tgtFrame.poly2d,
+            );
+            const map = stellQuaternionMapReferenceFaceBoundaryToTarget(
+                W,
+                n0,
+                refC,
+                T,
+                tgtFrame.n,
+                tgtFrame.c,
+            );
+            if (!map || map.err > tol) continue;
+            addStellationDiagramFlatRegionsForFace(
+                stellationDiagramSelectionGroup,
+                st.regions,
+                stellDiagramSelectedKeys,
+                refC,
+                refU,
+                refV,
+                map.q,
+                tgtFrame.c,
+                tgtFrame.n,
+                mode,
+            );
+        }
+    }
+
+    if (stellationDiagramSelectionGroup.children.length > 0)
+        scene.add(stellationDiagramSelectionGroup);
+}
+
+function stellClientToDiagramUV(canvas, offsetX, offsetY, pick) {
+    const w = pick.displayCss;
+    const s = pick.scale * (pick.viewZoom ?? 1);
+    const cx = pick.cx + (pick.viewPanU ?? 0);
+    const cy = pick.cy + (pick.viewPanV ?? 0);
+    const u = (offsetX - w / 2) / s + cx;
+    const v = -(offsetY - w / 2) / s + cy;
+    return { u, v };
+}
+
+/** @returns {{ id: number, verts: {u:number,v:number}[], centroidKey: string } | null} */
+function stellDiagramHitRegionAtClient(canvas, clientX, clientY) {
+    if (!canvas || !stellDiagramPickState?.regions?.length) return null;
+    const st = stellDiagramPickState;
+    const rect = canvas.getBoundingClientRect();
+    const wCss = st.displayCss || 280;
+    const ox =
+        ((clientX - rect.left) / Math.max(rect.width, 1)) * wCss;
+    const oy =
+        ((clientY - rect.top) / Math.max(rect.height, 1)) * wCss;
+    const { u, v } = stellClientToDiagramUV(canvas, ox, oy, st);
+    const hits = [];
+    for (const r of st.regions) {
+        if (stellPointInPolygon(u, v, r.verts)) hits.push(r);
+    }
+    if (hits.length === 0) return null;
+    if (hits.length === 1) return hits[0];
+    hits.sort(
+        (a, b) =>
+            Math.abs(stellPolygonSignedArea(a.verts)) -
+            Math.abs(stellPolygonSignedArea(b.verts)),
+    );
+    return hits[0];
+}
+
+function onStellationDiagramCanvasWheel(ev) {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    const wrap = document.getElementById("stellationDiagramWrap");
+    if (!canvas || !wrap || wrap.hidden) return;
+    const st = stellDiagramPickState;
+    if (!st?.scale) return;
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const wCss = st.displayCss || 280;
+    const ox =
+        ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * wCss;
+    const oy =
+        ((ev.clientY - rect.top) / Math.max(rect.height, 1)) * wCss;
+    const z0 = stellDiagramViewZoom;
+    const s0 = st.scale * z0;
+    const u0 = (ox - wCss / 2) / s0 + st.cx + stellDiagramViewPanU;
+    const v0 = -(oy - wCss / 2) / s0 + st.cy + stellDiagramViewPanV;
+    const factor = Math.exp(-ev.deltaY * 0.0015);
+    const z1 = THREE.MathUtils.clamp(z0 * factor, 0.2, 16);
+    stellDiagramViewZoom = z1;
+    const s1 = st.scale * z1;
+    stellDiagramViewPanU = u0 - st.cx - (ox - wCss / 2) / s1;
+    stellDiagramViewPanV = v0 - st.cy + (oy - wCss / 2) / s1;
+    redrawStellationDiagram();
+}
+
+function onStellationDiagramCanvasPointerDown(ev) {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    const wrap = document.getElementById("stellationDiagramWrap");
+    if (!canvas || !wrap || wrap.hidden) return;
+    const wantPanMiddle = ev.button === 1;
+    const wantPanAltLeft = ev.button === 0 && ev.altKey;
+    if (!wantPanMiddle && !wantPanAltLeft) return;
+    stellDiagramPanActive = true;
+    stellDiagramPanPointerId = ev.pointerId;
+    stellDiagramPanLastCssX = ev.clientX;
+    stellDiagramPanLastCssY = ev.clientY;
+    stellDiagramPanHadMotion = false;
+    stellDiagramPanUsedAltLeft = wantPanAltLeft;
+    canvas.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+}
+
+function onStellationDiagramCanvasPointerUp(ev) {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    if (!canvas) return;
+    if (ev.pointerId !== stellDiagramPanPointerId) return;
+    if (stellDiagramPanUsedAltLeft && stellDiagramPanHadMotion) {
+        stellDiagramSuppressNextClick = true;
+    }
+    stellDiagramPanActive = false;
+    stellDiagramPanPointerId = null;
+    stellDiagramPanUsedAltLeft = false;
+    try {
+        canvas.releasePointerCapture(ev.pointerId);
+    } catch {
+        /* ignore */
+    }
+}
+
+function refreshStellationDiagramCanvasCursor() {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    const wrap = document.getElementById("stellationDiagramWrap");
+    if (!canvas || !wrap || wrap.hidden) {
+        if (canvas) canvas.style.cursor = "";
+        return;
+    }
+    if (
+        !stellDiagramPointerInside ||
+        !stellDiagramPickState?.regions?.length
+    ) {
+        canvas.style.cursor = "";
+        return;
+    }
+    const r = stellDiagramHitRegionAtClient(
+        canvas,
+        stellDiagramLastPointerClientX,
+        stellDiagramLastPointerClientY,
+    );
+    canvas.style.cursor = r ? "pointer" : "";
+}
+
+function onStellationDiagramCanvasPointerMove(ev) {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    const wrap = document.getElementById("stellationDiagramWrap");
+    if (!canvas || !wrap || wrap.hidden) return;
+    if (
+        stellDiagramPanActive &&
+        ev.pointerId === stellDiagramPanPointerId
+    ) {
+        const st = stellDiagramPickState;
+        if (st?.scale) {
+            const rect = canvas.getBoundingClientRect();
+            const wCss = st.displayCss || 280;
+            const dOx =
+                ((ev.clientX - stellDiagramPanLastCssX) /
+                    Math.max(rect.width, 1)) *
+                wCss;
+            const dOy =
+                ((ev.clientY - stellDiagramPanLastCssY) /
+                    Math.max(rect.height, 1)) *
+                wCss;
+            if (Math.abs(dOx) + Math.abs(dOy) > 0.5) {
+                stellDiagramPanHadMotion = true;
+            }
+            const s = st.scale * stellDiagramViewZoom;
+            stellDiagramViewPanU -= dOx / s;
+            stellDiagramViewPanV += dOy / s;
+            stellDiagramPanLastCssX = ev.clientX;
+            stellDiagramPanLastCssY = ev.clientY;
+            redrawStellationDiagram();
+        }
+        return;
+    }
+    stellDiagramPointerInside = true;
+    stellDiagramLastPointerClientX = ev.clientX;
+    stellDiagramLastPointerClientY = ev.clientY;
+    refreshStellationDiagramCanvasCursor();
+}
+
+function onStellationDiagramCanvasPointerLeave() {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    if (!stellDiagramPanActive) stellDiagramPointerInside = false;
+    if (canvas && !stellDiagramPanActive) canvas.style.cursor = "";
+}
+
+function onStellationDiagramCanvasClick(ev) {
+    if (stellDiagramSuppressNextClick) {
+        stellDiagramSuppressNextClick = false;
+        return;
+    }
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    const wrap = document.getElementById("stellationDiagramWrap");
+    if (!canvas || !wrap || wrap.hidden || !stellDiagramPickState?.regions)
+        return;
+    if (ev.button !== 0) return;
+    const r = stellDiagramHitRegionAtClient(
+        canvas,
+        ev.clientX,
+        ev.clientY,
+    );
+    if (!r) return;
+    if (stellDiagramSelectedKeys.has(r.centroidKey)) {
+        stellDiagramSelectedKeys.delete(r.centroidKey);
+    } else {
+        stellDiagramSelectedKeys.add(r.centroidKey);
+    }
+    redrawStellationDiagram();
+    rebuildStellationDiagramSelection3D();
+}
+
+function clearStellationDiagramCanvas() {
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    if (!canvas?.getContext) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function redrawStellationDiagram() {
+    const wrap = document.getElementById("stellationDiagramWrap");
+    const canvas = document.getElementById("stellationDiagramCanvas");
+    if (!wrap || wrap.hidden || !canvas?.getContext) return;
+
+    const polyKey =
+        lastLoadedNetData &&
+        getVertexConfigKeyForNetData(lastLoadedNetData);
+    if (!polyKey || !STELLATION_DIAGRAM_POLY_KEYS.has(polyKey)) return;
+
+    if (stellDiagramViewLastPolyKey !== polyKey) {
+        stellDiagramViewZoom = 1;
+        stellDiagramViewPanU = 0;
+        stellDiagramViewPanV = 0;
+        stellDiagramViewLastPolyKey = polyKey;
+    }
+
+    const expectedSides =
+        polyKey === "5.5.5"
+            ? 5
+            : polyKey === "rhombic-dodecahedron"
+              ? 4
+              : 3;
+    const refFaceId = findReferenceFaceIdForStellationDiagram(expectedSides);
+    const refVerts = refFaceId != null ? getMeshWorldVertices(refFaceId) : null;
+    if (!refVerts || refVerts.length < 3) return;
+
+    const refCentroid = calculateWorldCentroid(refVerts);
+    const refNormal = calculateWorldNormalRobust(refVerts);
+    const interior = computeSolidCentroidWorld();
+    if (
+        interior &&
+        refNormal.dot(_stellTmpA.copy(refCentroid).sub(interior)) < 0
+    )
+        refNormal.negate();
+
+    const refPlane = new THREE.Plane();
+    refPlane.setFromNormalAndCoplanarPoint(refNormal, refCentroid);
+
+    const { poly2d, uAxis, vAxis } = orderConvexFacePolygon2D(
+        refVerts,
+        refCentroid,
+        refNormal,
+    );
+
+    /* Large enough to include outer stellation “star” lines (classical diagrams extend
+     * well past the face; margin is half-size of clip square vs max vertex radius). */
+    const margin =
+        polyKey === "5.5.5"
+            ? 8.25
+            : polyKey === "rhombic-dodecahedron"
+              ? 8.0
+              : 8.75;
+    let clipPoly2d = makeStellationDiagramClipWindow2D(poly2d, margin);
+
+    const segments = [];
+    const lineOrigin = new THREE.Vector3();
+    const lineDir = new THREE.Vector3();
+
+    const collectSegmentsForClip = (clipPoly) => {
+        const out = [];
+        for (const key of Object.keys(allVertices)) {
+            const fid = parseInt(key, 10);
+            if (Number.isNaN(fid) || fid === refFaceId) continue;
+            const otherPlane = makeFacePlaneWorld(fid, interior);
+            if (!otherPlane) continue;
+            if (!intersectPlanesLine(refPlane, otherPlane, lineOrigin, lineDir))
+                continue;
+
+            _stellProjOnPlane.copy(lineOrigin);
+            refPlane.projectPoint(_stellProjOnPlane, lineOrigin);
+
+            const Ou = _stellTmpB.subVectors(lineOrigin, refCentroid);
+            const O2 = { u: Ou.dot(uAxis), v: Ou.dot(vAxis) };
+            const D2 = {
+                u: lineDir.dot(uAxis),
+                v: lineDir.dot(vAxis),
+            };
+            if (Math.abs(D2.u) + Math.abs(D2.v) < 1e-10) continue;
+
+            const clip = clipInfiniteLineToConvexPolygon2D(O2, D2, clipPoly);
+            if (!clip) continue;
+            out.push({
+                u0: O2.u + clip.t0 * D2.u,
+                v0: O2.v + clip.t0 * D2.v,
+                u1: O2.u + clip.t1 * D2.u,
+                v1: O2.v + clip.t1 * D2.v,
+            });
+        }
+        return out;
+    };
+
+    segments.push(...collectSegmentsForClip(clipPoly2d));
+    if (segments.length === 0) {
+        clipPoly2d = [...clipPoly2d].reverse();
+        segments.push(...collectSegmentsForClip(clipPoly2d));
+    }
+
+    let meanRefEdge = 0;
+    for (let i = 0; i < poly2d.length; i++) {
+        const p = poly2d[i];
+        const q = poly2d[(i + 1) % poly2d.length];
+        meanRefEdge += Math.hypot(q.u - p.u, q.v - p.v);
+    }
+    meanRefEdge =
+        poly2d.length > 0 ? meanRefEdge / poly2d.length : sideLength;
+
+    const { regions: diagramRegions } = buildStellationDiagramRegions(
+        poly2d,
+        clipPoly2d,
+        segments,
+    );
+    if (stellDiagramSelectedKeys.size > 0)
+        stellRemapDiagramSelectionToNewRegions(diagramRegions);
+
+    const root = document.documentElement;
+    const cs = getComputedStyle(root);
+    const stroke = (cs.getPropertyValue("--text-muted") || "#888").trim();
+    const pad = 14;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const expand = (u, v) => {
+        minX = Math.min(minX, u);
+        minY = Math.min(minY, v);
+        maxX = Math.max(maxX, u);
+        maxY = Math.max(maxY, v);
+    };
+    for (const p of poly2d) expand(p.u, p.v);
+    for (const p of clipPoly2d) expand(p.u, p.v);
+    for (const s of segments) {
+        expand(s.u0, s.v0);
+        expand(s.u1, s.v1);
+    }
+    if (!Number.isFinite(minX)) return;
+    const bw = Math.max(maxX - minX, 1e-6);
+    const bh = Math.max(maxY - minY, 1e-6);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    const displayCss = Math.min(wrap.clientWidth || 280, 280);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(displayCss * dpr));
+    canvas.height = Math.max(1, Math.round(displayCss * dpr));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const w = displayCss;
+    const h = displayCss;
+    const scale = Math.min((w - 2 * pad) / bw, (h - 2 * pad) / bh);
+    const sDraw = scale * stellDiagramViewZoom;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(w / 2, h / 2);
+    ctx.scale(sDraw, -sDraw);
+    ctx.translate(-cx - stellDiagramViewPanU, -cy - stellDiagramViewPanV);
+
+    const accent =
+        (cs.getPropertyValue("--text") || "#ccc").trim() || "#ccc";
+    for (const r of diagramRegions) {
+        if (!stellDiagramSelectedKeys.has(r.centroidKey)) continue;
+        ctx.fillStyle = accent;
+        ctx.globalAlpha = 0.2;
+        ctx.beginPath();
+        for (let i = 0; i < r.verts.length; i++) {
+            const p = r.verts[i];
+            if (i === 0) ctx.moveTo(p.u, p.v);
+            else ctx.lineTo(p.u, p.v);
+        }
+        ctx.closePath();
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = stroke;
+    ctx.globalAlpha = 0.08;
+    ctx.beginPath();
+    for (let i = 0; i < poly2d.length; i++) {
+        const p = poly2d[i];
+        if (i === 0) ctx.moveTo(p.u, p.v);
+        else ctx.lineTo(p.u, p.v);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = stroke;
+    /* lineWidth in (u,v) units; thinner strokes for a lighter diagram look */
+    ctx.lineWidth = Math.max(0.65 / sDraw, 0.45 / sDraw);
+    ctx.beginPath();
+    for (let i = 0; i < poly2d.length; i++) {
+        const p = poly2d[i];
+        if (i === 0) ctx.moveTo(p.u, p.v);
+        else ctx.lineTo(p.u, p.v);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.globalAlpha = 0.88;
+    ctx.lineWidth = Math.max(1.05 / sDraw, 0.75 / sDraw);
+    for (const s of segments) {
+        ctx.beginPath();
+        ctx.moveTo(s.u0, s.v0);
+        ctx.lineTo(s.u1, s.v1);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    stellDiagramPickState = {
+        displayCss: w,
+        scale,
+        cx,
+        cy,
+        viewZoom: stellDiagramViewZoom,
+        viewPanU: stellDiagramViewPanU,
+        viewPanV: stellDiagramViewPanV,
+        regions: diagramRegions,
+        uAxis: uAxis.clone(),
+        vAxis: vAxis.clone(),
+        refCentroid: refCentroid.clone(),
+        refNormal: refNormal.clone(),
+        meanRefEdge,
+        referenceFaceId: refFaceId,
+        refFacePoly2d: poly2d.map((p) => ({ u: p.u, v: p.v })),
+        replicateDiagramToAllFaces:
+            STELLATION_DIAGRAM_REPLICATE_ALL_FACES_KEYS.has(polyKey),
+    };
+    refreshStellationDiagramCanvasCursor();
+    rebuildStellationDiagramSelection3D();
 }
 
 // --- Geometry & Base Vertex Functions ---
@@ -2458,6 +4196,25 @@ function forEachFaceMesh(fn) {
     });
 }
 
+/**
+ * Stellation overlays (diagram picks + uniform caps): see-through vs solid from Appearance.
+ * @param {THREE.Material} mat
+ */
+function applyTranslucentStellationSurfaceMaterial(mat) {
+    if (!mat || !("opacity" in mat) || mat.opacity === undefined) return;
+    const el = document.getElementById("translucentStellationsCheckbox");
+    const wantTranslucent = el ? el.checked : true;
+    if (!wantTranslucent) {
+        mat.opacity = 1;
+        mat.transparent = false;
+        if ("depthWrite" in mat) mat.depthWrite = true;
+        return;
+    }
+    mat.transparent = true;
+    mat.opacity = Math.min(0.9, (mat.opacity ?? 1) * 0.86);
+    if ("depthWrite" in mat) mat.depthWrite = false;
+}
+
 function createFaceMaterial(colorHex, mode) {
     const env = scene?.environment || null;
     switch (mode) {
@@ -2512,11 +4269,11 @@ function disposeFaceMeshMaterial(mesh) {
 
 function syncLightingToThemeAndMode() {
     if (!ambientLight || !hemiLight || !directionalLight || !fillLight) return;
+    directionalLight.castShadow = false;
     const dark =
         document.documentElement.getAttribute("data-theme") === "dark";
     const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
     if (mode === "rendered") {
-        directionalLight.castShadow = true;
         if (dark) {
             ambientLight.intensity = 0.15;
             hemiLight.intensity = 0.28;
@@ -2529,7 +4286,6 @@ function syncLightingToThemeAndMode() {
             fillLight.intensity = 0.45;
         }
     } else {
-        directionalLight.castShadow = false;
         if (dark) {
             ambientLight.intensity = 0.44;
             hemiLight.intensity = 0.5;
@@ -2591,13 +4347,13 @@ function applyRenderModeVisualLayers() {
     if (renderModeSlider)
         renderModeSlider.value = String(currentRenderModeIndex);
     updateRenderModeStopsHighlight();
-    if (shadowGround) shadowGround.visible = mode === "rendered";
+    if (shadowGround) shadowGround.visible = false;
     if (renderer)
         renderer.toneMappingExposure = mode === "rendered" ? 1.1 : 1.0;
     syncLightingToThemeAndMode();
     forEachFaceMesh((mesh) => {
-        mesh.castShadow = mode === "rendered";
-        mesh.receiveShadow = mode === "rendered";
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
     });
     updateEdgeLinesForRenderMode();
 }
@@ -2611,6 +4367,9 @@ function applyRenderMode(index) {
     });
     applyRenderModeVisualLayers();
     refreshBuilderFaceSelectionHighlight();
+    if (trophyPreviewGoldActive) applyTrophyPreviewGold(true);
+    rebuildStellationUniformCapsIfNeeded();
+    rebuildStellationDiagramSelection3D();
 }
 
 function applyCanvasTheme(useDark) {
@@ -2622,6 +4381,7 @@ function applyCanvasTheme(useDark) {
         scene.background = new THREE.Color(useDark ? 0x141418 : 0xffffff);
     syncLightingToThemeAndMode();
     updateEdgeLinesForRenderMode();
+    redrawStellationDiagram();
 }
 
 function setupImageBasedLighting() {
@@ -2927,6 +4687,7 @@ function createNetFromData(netData) {
                     .sub(fj_S_target)
                     .normalize();
                 const pivot = new THREE.Group();
+                pivot.userData.parentFaceIndex = j;
                 pivots[i] = pivot;
                 parentObject.updateWorldMatrix(true, true);
                 tempMatrix.copy(parentObject.matrixWorld).invert();
@@ -2998,6 +4759,333 @@ function createNetFromData(netData) {
         );
         clearSceneGeometry();
     }
+}
+
+function createTrophyThumbnailGoldMaterial() {
+    if (scene?.environment) {
+        const m = new THREE.MeshStandardMaterial({
+            color: 0xffe8b8,
+            metalness: 0.82,
+            roughness: 0.32,
+            envMapIntensity: 1.25,
+        });
+        m.envMap = scene.environment;
+        return m;
+    }
+    return new THREE.MeshPhongMaterial({
+        color: 0xffcf66,
+        emissive: 0x4a3208,
+        emissiveIntensity: 0.22,
+        shininess: 78,
+        specular: 0xfff2dd,
+    });
+}
+
+function createTrophyPreviewGoldMaterial() {
+    return createTrophyThumbnailGoldMaterial();
+}
+
+/**
+ * Same topology as the main net builder: flat unfolded layout from net JSON, gold material, no outlines/normals.
+ */
+function buildFlatGoldNetGroup(netData) {
+    const L = sideLength;
+    const container = new THREE.Group();
+    const av = {};
+    const pv = {};
+    const goldMat = createTrophyThumbnailGoldMaterial();
+    av[1] = resolveNetFaceVertices(netData.baseFace, L);
+    const baseGeom = createRegularPolygonGeometry(av[1]);
+    if (!baseGeom.attributes.position || baseGeom.attributes.position.count === 0)
+        throw new Error("Trophy base geometry failed.");
+    const baseMesh = new THREE.Mesh(baseGeom, goldMat);
+    baseMesh.userData.faceId = 1;
+    container.add(baseMesh);
+
+    const tempVec1 = new THREE.Vector3();
+    const tempVec2 = new THREE.Vector3();
+    const Q = new THREE.Vector3();
+    const tempMatrix = new THREE.Matrix4();
+    const tempQuatInv = new THREE.Quaternion();
+    const tempWorldPos = new THREE.Vector3();
+
+    for (const conn of netData.connections || []) {
+        const i = conn.from;
+        const j = conn.to;
+        if (typeof i !== "number" || typeof j !== "number" || j < 0) continue;
+
+        let Fi_base_vertices;
+        try {
+            Fi_base_vertices = resolveNetFaceVertices(conn, L);
+        } catch {
+            continue;
+        }
+        const k = Fi_base_vertices.numSides;
+        if (k < 3) continue;
+
+        const parentVertices = j === 1 ? av[1] : av[j];
+        if (!parentVertices?.numSides) continue;
+
+        const Fi_M_vertex_index = conn.fromEdge[0];
+        const Fi_N_vertex_index = conn.fromEdge[1];
+        if (
+            Fi_M_vertex_index === undefined ||
+            Fi_M_vertex_index < 0 ||
+            Fi_M_vertex_index >= k ||
+            Fi_N_vertex_index === undefined ||
+            Fi_N_vertex_index < 0 ||
+            Fi_N_vertex_index >= k
+        ) {
+            continue;
+        }
+        const W = tempVec1.subVectors(
+            Fi_base_vertices[Fi_N_vertex_index],
+            Fi_base_vertices[Fi_M_vertex_index],
+        );
+
+        const parentNumSides = parentVertices.numSides;
+        const Fj_R_vertex_index = conn.toEdge[0];
+        const Fj_S_vertex_index = conn.toEdge[1];
+        if (
+            Fj_R_vertex_index === undefined ||
+            Fj_R_vertex_index < 0 ||
+            Fj_R_vertex_index >= parentNumSides ||
+            Fj_S_vertex_index === undefined ||
+            Fj_S_vertex_index < 0 ||
+            Fj_S_vertex_index >= parentNumSides
+        ) {
+            continue;
+        }
+        const Fj_R_vertex = parentVertices[Fj_R_vertex_index];
+        const Fj_S_vertex = parentVertices[Fj_S_vertex_index];
+        if (!Fj_R_vertex || !Fj_S_vertex) continue;
+        const V = tempVec2.subVectors(Fj_S_vertex, Fj_R_vertex);
+
+        const dot = W.x * V.x + W.z * V.z;
+        const det = W.x * V.z - W.z * V.x;
+        let alpha = Math.atan2(det, dot);
+        if (W.lengthSq() < 1e-9 || V.lengthSq() < 1e-9) alpha = 0;
+
+        const cosA = Math.cos(alpha);
+        const sinA = Math.sin(alpha);
+        const Fi_rotated_vertices = Fi_base_vertices.map(
+            (v) =>
+                new THREE.Vector3(
+                    v.x * cosA - v.z * sinA,
+                    0,
+                    v.x * sinA + v.z * cosA,
+                ),
+        );
+        const Fi_M_rotated_vertex = Fi_rotated_vertices[Fi_M_vertex_index];
+        Q.subVectors(Fj_R_vertex, Fi_M_rotated_vertex);
+        const Fi_final_world_vertices = Fi_rotated_vertices.map((v) =>
+            v.clone().add(Q),
+        );
+
+        unfoldFlipFlapIfOverlappingParent(
+            Fi_final_world_vertices,
+            k,
+            parentVertices,
+            parentNumSides,
+            Fj_R_vertex_index,
+            Fj_S_vertex_index,
+            Fj_R_vertex,
+            Fj_S_vertex,
+        );
+
+        av[i] = Fi_final_world_vertices;
+        av[i].numSides = k;
+        if (Fi_base_vertices.isStarPolygon) av[i].isStarPolygon = true;
+        av[i].conn = {
+            R_idx: Fi_M_vertex_index,
+            S_idx: Fi_N_vertex_index,
+        };
+
+        const fi_worldVertices = av[i];
+        const parentObject = j === 1 ? container : pv[j];
+        if (!parentObject) continue;
+        const fj_R_target = Fj_R_vertex;
+        const fj_S_target = Fj_S_vertex;
+        const edgeMidpointWorld = fj_R_target
+            .clone()
+            .add(fj_S_target)
+            .multiplyScalar(0.5);
+        const edgeAxisWorld = fj_R_target
+            .clone()
+            .sub(fj_S_target)
+            .normalize();
+        const pivot = new THREE.Group();
+        pv[i] = pivot;
+        parentObject.updateWorldMatrix(true, true);
+        tempMatrix.copy(parentObject.matrixWorld).invert();
+        pivot.position.copy(edgeMidpointWorld).applyMatrix4(tempMatrix);
+        tempQuatInv
+            .copy(parentObject.getWorldQuaternion(new THREE.Quaternion()))
+            .invert();
+        pivot.userData.axis = edgeAxisWorld
+            .clone()
+            .applyQuaternion(tempQuatInv);
+        pivot.quaternion.identity();
+        parentObject.add(pivot);
+        pivot.getWorldPosition(tempWorldPos);
+        const pivotWorldQuaternionInv = pivot
+            .getWorldQuaternion(new THREE.Quaternion())
+            .invert();
+        const fi_localVertices = fi_worldVertices.map((worldVert) =>
+            worldVert
+                .clone()
+                .sub(tempWorldPos)
+                .applyQuaternion(pivotWorldQuaternionInv),
+        );
+        const geometry = createRegularPolygonGeometry(fi_localVertices);
+        if (!geometry.attributes.position || geometry.attributes.position.count === 0)
+            continue;
+        const faceMesh = new THREE.Mesh(geometry, goldMat);
+        faceMesh.userData.faceId = i;
+        pivot.add(faceMesh);
+    }
+    return container;
+}
+
+function renderTrophyGroupToDataUrl(group) {
+    if (!group) return null;
+    if (!trophyThumbRenderer) {
+        trophyThumbRenderer = new THREE.WebGLRenderer({
+            alpha: true,
+            antialias: true,
+            preserveDrawingBuffer: true,
+        });
+        trophyThumbRenderer.setSize(128, 128);
+        trophyThumbRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        trophyThumbRenderer.outputColorSpace = THREE.SRGBColorSpace;
+        trophyThumbRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+        trophyThumbRenderer.toneMappingExposure = 1.08;
+    }
+    if (!trophyThumbScene) trophyThumbScene = new THREE.Scene();
+    const s = trophyThumbScene;
+    while (s.children.length) s.remove(s.children[0]);
+    s.environment = scene?.environment || null;
+    const amb = new THREE.AmbientLight(0xffffff, 0.52);
+    const dir = new THREE.DirectionalLight(0xfff5e6, 1.15);
+    dir.position.set(5, 12, 8);
+    s.add(amb, dir, group);
+
+    group.updateWorldMatrix(true, true);
+    const box = new THREE.Box3().setFromObject(group);
+    const center = box.getCenter(new THREE.Vector3());
+    const ext = box.getSize(new THREE.Vector3());
+    const radius = Math.max(ext.x, ext.y, ext.z, 0.8) * 0.55;
+    const cam = new THREE.PerspectiveCamera(42, 1, 0.08, 800);
+    cam.position.set(
+        center.x + radius * 1.35,
+        center.y + radius * 1.05,
+        center.z + radius * 1.35,
+    );
+    cam.lookAt(center);
+
+    trophyThumbRenderer.render(s, cam);
+    const url = trophyThumbRenderer.domElement.toDataURL("image/png");
+    s.remove(group);
+    s.remove(amb);
+    s.remove(dir);
+    const mats = new Set();
+    group.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) mats.add(o.material);
+    });
+    mats.forEach((m) => m.dispose());
+    return url;
+}
+
+async function tryFetchManualTrophyPng(polyKey) {
+    const j = POLY_KEY_TO_PRESET_NET_FILE[polyKey];
+    const candidates = [];
+    if (j) candidates.push(`trophies/${j.replace(/\.json$/i, ".png")}`);
+    candidates.push(`trophies/${polyKey}.png`);
+    for (const url of candidates) {
+        try {
+            const r = await fetch(url);
+            if (!r.ok) continue;
+            await r.blob();
+            return url;
+        } catch {
+            /* try next */
+        }
+    }
+    return null;
+}
+
+async function getTrophyThumbDataUrl(polyKey) {
+    const ck = trophyThumbCacheKey(polyKey);
+    if (trophyThumbCache.has(ck)) return trophyThumbCache.get(ck);
+
+    const manualUrl = await tryFetchManualTrophyPng(polyKey);
+    if (manualUrl) {
+        trophyThumbCache.set(ck, manualUrl);
+        return manualUrl;
+    }
+
+    const file = POLY_KEY_TO_PRESET_NET_FILE[polyKey];
+    if (!file) {
+        const svg = trophySvgMarkupForKey(polyKey, 0);
+        const u = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+        trophyThumbCache.set(ck, u);
+        return u;
+    }
+    try {
+        const res = await fetch(`nets/${file}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const netData = await res.json();
+        const g = buildFlatGoldNetGroup(netData);
+        const url = renderTrophyGroupToDataUrl(g);
+        if (url) trophyThumbCache.set(ck, url);
+        return url || "";
+    } catch (e) {
+        console.warn("Trophy thumbnail fetch/render failed:", polyKey, e);
+        const svg = trophySvgMarkupForKey(polyKey, 0);
+        const u = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+        trophyThumbCache.set(ck, u);
+        return u;
+    }
+}
+
+function scheduleTrophyThumb(polyKey, imgEl) {
+    if (!imgEl) return;
+    const ck = trophyThumbCacheKey(polyKey);
+    if (trophyThumbCache.has(ck)) {
+        imgEl.src = trophyThumbCache.get(ck);
+        return;
+    }
+    let p = trophyThumbInflight.get(polyKey);
+    if (!p) {
+        p = getTrophyThumbDataUrl(polyKey).finally(() => {
+            trophyThumbInflight.delete(polyKey);
+        });
+        trophyThumbInflight.set(polyKey, p);
+    }
+    p.then((url) => {
+        if (url) imgEl.src = url;
+    });
+}
+
+function applyTrophyPreviewGold(on) {
+    trophyPreviewGoldActive = on;
+    const cb = document.getElementById("trophyPreviewGoldCheckbox");
+    if (cb) cb.checked = on;
+    if (!f1Mesh) return;
+    if (!on) {
+        applyRenderMode(currentRenderModeIndex);
+        applyRenderModeVisualLayers();
+        return;
+    }
+    const proto = createTrophyPreviewGoldMaterial();
+    forEachFaceMesh((mesh) => {
+        disposeFaceMeshMaterial(mesh);
+        mesh.material = proto.clone();
+    });
+    applyRenderModeVisualLayers();
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    if (renderer) renderer.toneMappingExposure = mode === "rendered" ? 1.14 : 1.08;
 }
 
 /** Invisible until hover; raycaster still hits geometry. Hover = solid green band. */
@@ -3150,7 +5238,10 @@ function enterNetBuilderFromData(netData, options = {}) {
     if (builderPanelEl) builderPanelEl.hidden = false;
     if (builderAttachPanel) builderAttachPanel.hidden = true;
     hydrateUsedEdgesFromNet(builderNetData);
-    loadAndProcessNet(builderNetData, { allowUnknownSignature: true });
+    loadAndProcessNet(builderNetData, {
+        allowUnknownSignature: true,
+        trophyEligible: options.fromScratchBuild === true,
+    });
     setCreateSectionExpanded(true);
 }
 
@@ -3220,6 +5311,7 @@ function tryAppendFlapToEdge(pick, spec, color) {
         hydrateUsedEdgesFromNet(builderNetData);
         loadAndProcessNet(builderNetData, {
             allowUnknownSignature: true,
+            trophyEligible: builderSessionFromScratch,
         });
         builderDirty = true;
         return true;
@@ -3395,7 +5487,10 @@ function deleteSelectedBuilderFace() {
         if (builderAttachPanel) builderAttachPanel.hidden = true;
         clearBuilderFaceSelection();
         hydrateUsedEdgesFromNet(builderNetData);
-        loadAndProcessNet(builderNetData, { allowUnknownSignature: true });
+        loadAndProcessNet(builderNetData, {
+            allowUnknownSignature: true,
+            trophyEligible: builderSessionFromScratch,
+        });
         builderDirty = true;
     } catch (err) {
         alert(err.message || String(err));
@@ -3489,7 +5584,10 @@ function applyReplaceSelectedFaceShape() {
         if (builderAttachPanel) builderAttachPanel.hidden = true;
         clearBuilderFaceSelection();
         hydrateUsedEdgesFromNet(builderNetData);
-        loadAndProcessNet(builderNetData, { allowUnknownSignature: true });
+        loadAndProcessNet(builderNetData, {
+            allowUnknownSignature: true,
+            trophyEligible: builderSessionFromScratch,
+        });
         builderDirty = true;
     } catch (err) {
         alert(err.message || String(err));
@@ -3546,6 +5644,9 @@ function triggerAnimationStage(stage, meta = {}) {
     currentAnimationStage = stage;
     pivotsInCurrentStage = getPivotsForStage(stage);
     if (pivotsInCurrentStage.length === 0) {
+        if (meta.computeOnly) {
+            return;
+        }
         isAnimating = false;
         currentAnimationStage = 0;
         pauseButton.disabled = true;
@@ -3580,11 +5681,19 @@ function triggerAnimationStage(stage, meta = {}) {
             continue;
         }
         const parent = pivot.parent;
-        const parentKey = Object.keys(pivots).find(
-            (key) => pivots[key] === parent,
-        );
+        const storedParent = pivot.userData.parentFaceIndex;
+        const parentKey =
+            typeof storedParent === "number" && storedParent >= 1
+                ? null
+                : Object.keys(pivots).find((key) => pivots[key] === parent);
         const parentIndex =
-            parent === scene ? 1 : parentKey ? parseInt(parentKey, 10) : null;
+            typeof storedParent === "number" && storedParent >= 1
+                ? storedParent
+                : parent === scene
+                  ? 1
+                  : parentKey
+                    ? parseInt(parentKey, 10)
+                    : null;
         const parentData = parentIndex ? allVertices[parentIndex] : null;
         if (
             !pivot.userData.axis ||
@@ -3660,7 +5769,10 @@ function triggerAnimationStage(stage, meta = {}) {
                 centerG_minus && normalG_minus
                     ? mPointVec3.copy(centerG_minus).add(normalG_minus)
                     : null;
-            const bulkC = computeBulkCentroidWorldExcludingFace(faceIndex);
+            const bulkC = computeBulkCentroidWorldExcludingFace(
+                faceIndex,
+                faceIndex - 1,
+            );
             if (bulkC && centerG_plus && centerG_minus) {
                 const dBulkPlus = centerG_plus.distanceToSquared(bulkC);
                 const dBulkMinus = centerG_minus.distanceToSquared(bulkC);
@@ -3688,12 +5800,51 @@ function triggerAnimationStage(stage, meta = {}) {
             targetAngleValue,
         );
     }
+    if (meta.computeOnly) {
+        return;
+    }
     animationStartTime = performance.now();
     pausedElapsedTime = 0;
     isAnimating = true;
     isPaused = false;
     pauseButton.disabled = false;
     pauseButton.textContent = "Pause";
+    syncBuilderEdgePicksVisibility();
+}
+
+/** Apply every hinge target in order with no tweening (same math as animated fold). */
+function instantFoldToClosed() {
+    if (!f1Mesh) return;
+    if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) return;
+    if (trialFoldPauseActive) return;
+    if (isAnimating) return;
+    if (isFolded) return;
+
+    if (NUM_ANIMATION_STAGES < 1) {
+        isFolded = true;
+        refreshFoldControlState();
+        syncBuilderEdgePicksVisibility();
+        return;
+    }
+
+    for (let s = 1; s <= NUM_ANIMATION_STAGES; s++) {
+        triggerAnimationStage(s, { computeOnly: true });
+        for (const pivotIndex of pivotsInCurrentStage) {
+            const t = targetQuaternions[pivotIndex];
+            if (t && pivots[pivotIndex]) pivots[pivotIndex].quaternion.copy(t);
+        }
+        scene.updateMatrixWorld(true);
+    }
+
+    isAnimating = false;
+    isPaused = false;
+    currentAnimationStage = 0;
+    pivotsInCurrentStage = [];
+    pauseButton.disabled = true;
+    pauseButton.textContent = "Pause";
+    isFolded = true;
+    tryScratchFoldTrophyReward();
+    refreshFoldControlState();
     syncBuilderEdgePicksVisibility();
 }
 
@@ -3758,6 +5909,7 @@ function onWindowResize() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
     if (controls?.handleResize) controls.handleResize();
+    redrawStellationDiagram();
 }
 function easeInOutQuad(t) {
     return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
@@ -3859,7 +6011,7 @@ presetNets.addEventListener("change", async (e) => {
         if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
         const netData = await response.json();
         console.log(`Processing preset net: ${netName}`);
-        loadAndProcessNet(netData);
+        loadAndProcessNet(netData, { trophyEligible: false });
     } catch (error) {
         console.error("Error loading preset net:", error);
         alert(`Error loading preset net: ${error.message}`);
