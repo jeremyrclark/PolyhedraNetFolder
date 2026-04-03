@@ -1,5 +1,6 @@
 {
   "description": "Rhombic dodecahedron (12 congruent rhombi); topology from Sandia polyhedra #33; face IDs 2–12 follow BFS for fold stages",
+  "polyKey": "rhombic-dodecahedron",
   "baseFace": {
     "vertices": [
       [0, 0],

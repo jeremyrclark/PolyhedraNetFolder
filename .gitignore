@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Regenerate with: python3 tools/generate_torus_flip_variants.py
+nets/torus-wolfram-1-variants/

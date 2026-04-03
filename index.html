@@ -4,7 +4,7 @@
     <link rel="manifest" href="manifest.json">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Folding Polyhedron Net</title>
+    <title>01-FOLD</title>
     <style>
         :root[data-theme="light"] {
             color-scheme: light;
@@ -25,6 +25,8 @@
             --button-primary-hover: #355891;
             --button-primary-text: #f5f7fc;
             --focus-ring: #4a7bc8;
+            --fold-slider-done: #ffffff;
+            --fold-slider-rest: #a0a0ac;
         }
 
         :root[data-theme="dark"] {
@@ -46,6 +48,8 @@
             --button-primary-hover: #5a7fc0;
             --button-primary-text: #f8f9fc;
             --focus-ring: #7aa3e0;
+            --fold-slider-done: #f0f0f6;
+            --fold-slider-rest: #4e4e58;
         }
 
         * { box-sizing: border-box; }
@@ -196,6 +200,61 @@
             margin: 0 0 2px 0;
         }
 
+        .section-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            width: 100%;
+            margin: 0 0 2px 0;
+        }
+
+        .section-title-row .section-title {
+            margin: 0;
+        }
+
+        .stellation-info-btn {
+            flex-shrink: 0;
+            padding: 2px;
+            margin: 0;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            color: var(--section-label);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.15s ease;
+        }
+
+        .stellation-info-btn:hover {
+            color: #fff;
+        }
+
+        :root[data-theme="light"] .stellation-info-btn:hover {
+            color: var(--text);
+        }
+
+        .stellation-info-btn:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        .stellation-info-btn svg {
+            width: 20px;
+            height: 20px;
+            display: block;
+        }
+
+        .stellation-help-panel {
+            margin: 0 0 8px 0;
+        }
+
+        .stellation-help-panel[hidden] {
+            display: none !important;
+        }
+
         .row {
             display: flex;
             flex-wrap: wrap;
@@ -269,22 +328,105 @@
             cursor: pointer;
         }
 
-        /* iOS-style theme toggle */
-        .theme-toggle {
+        .appearance-toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            width: 100%;
+            min-height: 26px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .appearance-toggle-text {
+            font-size: 12px;
+            color: var(--text);
+            flex: 1;
+            min-width: 0;
+            padding-right: 4px;
+            line-height: 1.25;
+        }
+
+        .appearance-look-row {
+            margin-bottom: 10px;
+        }
+
+        .appearance-custom-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 10px;
             width: 100%;
-            min-height: 28px;
-            cursor: pointer;
+            margin: 8px 0 4px 0;
+        }
+
+        .appearance-custom-label {
+            font-size: 12px;
+            font-weight: 400;
+            color: var(--text);
+            min-width: 0;
+        }
+
+        .appearance-custom-clear-btn {
+            flex-shrink: 0;
+            margin-left: auto;
+            font-size: 11px;
+            padding: 4px 10px;
+        }
+
+        .appearance-swatch-pick-row {
+            margin-top: 12px;
+        }
+
+        .appearance-color-block {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .controls-brand-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            width: 100%;
+            flex-shrink: 0;
+            padding-bottom: 12px;
+            margin-bottom: 2px;
+            border-bottom: 1px solid var(--panel-border);
             user-select: none;
         }
 
-        .theme-toggle .theme-toggle-label {
-            font-size: 12px;
+        .controls-brand-title {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
             color: var(--text);
-            flex: 1;
+            line-height: 1;
+            margin: 0;
+        }
+
+        .theme-pill-toggle {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            flex-shrink: 0;
+            cursor: pointer;
         }
 
         .theme-toggle-input {
@@ -292,39 +434,113 @@
             opacity: 0;
             width: 0;
             height: 0;
+            margin: 0;
         }
 
-        .theme-toggle-track {
+        .theme-pill-track {
             position: relative;
             width: 44px;
-            height: 26px;
+            height: 22px;
+            border-radius: 11px;
             flex-shrink: 0;
-            border-radius: 13px;
-            background: var(--input-border);
-            transition: background 0.2s ease;
+            border: 1px solid var(--input-border);
+            transition: background 0.2s ease, border-color 0.2s ease;
         }
 
-        .theme-toggle-thumb {
-            position: absolute;
-            top: 3px;
-            left: 3px;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
+        /* Off (unchecked): light track, black knob on the LEFT — dark theme uses muted gray track */
+        .theme-toggle-input:not(:checked) + .theme-pill-track {
             background: #fff;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-            transition: transform 0.2s ease;
         }
 
-        .theme-toggle-input:checked + .theme-toggle-track {
-            background: var(--button-primary-bg);
+        :root[data-theme="dark"] .theme-toggle-input:not(:checked) + .theme-pill-track {
+            background: #2e2e38;
         }
 
-        .theme-toggle-input:checked + .theme-toggle-track .theme-toggle-thumb {
-            transform: translateX(18px);
+        /* On (checked): black track, white knob on the RIGHT */
+        .theme-toggle-input:checked + .theme-pill-track {
+            background: #000;
         }
 
-        .theme-toggle-input:focus-visible + .theme-toggle-track {
+        .theme-pill-icon {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 14px;
+            height: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            z-index: 1;
+            transition: opacity 0.2s ease, color 0.2s ease;
+        }
+
+        /* Sun in the open right half when off (day); moon in the open left half when on (night) */
+        .theme-pill-icon--sun {
+            right: 4px;
+        }
+
+        .theme-pill-icon--moon {
+            left: 4px;
+        }
+
+        .theme-pill-icon svg {
+            width: 12px;
+            height: 12px;
+            display: block;
+        }
+
+        .theme-toggle-input:not(:checked) + .theme-pill-track .theme-pill-icon--sun {
+            color: #000;
+            opacity: 1;
+        }
+
+        :root[data-theme="dark"] .theme-toggle-input:not(:checked) + .theme-pill-track .theme-pill-icon--sun {
+            color: #e8e8f0;
+            opacity: 1;
+        }
+
+        .theme-toggle-input:checked + .theme-pill-track .theme-pill-icon--moon {
+            color: #fff;
+            opacity: 1;
+        }
+
+        /* Hide inactive icon (nothing under the knob / wrong mode) */
+        .theme-toggle-input:not(:checked) + .theme-pill-track .theme-pill-icon--moon {
+            opacity: 0;
+            visibility: hidden;
+        }
+
+        .theme-toggle-input:checked + .theme-pill-track .theme-pill-icon--sun {
+            opacity: 0;
+            visibility: hidden;
+        }
+
+        .theme-pill-thumb {
+            position: absolute;
+            top: 50%;
+            left: 3px;
+            width: 11px;
+            height: 11px;
+            margin: 0;
+            border-radius: 50%;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+            z-index: 2;
+            transition: transform 0.2s ease, background 0.2s ease;
+            pointer-events: none;
+        }
+
+        .theme-toggle-input:not(:checked) + .theme-pill-track .theme-pill-thumb {
+            background: #000;
+            transform: translate(0, -50%);
+        }
+
+        .theme-toggle-input:checked + .theme-pill-track .theme-pill-thumb {
+            background: #fff;
+            transform: translate(27px, -50%);
+        }
+
+        .theme-toggle-input:focus-visible + .theme-pill-track {
             outline: 2px solid var(--focus-ring);
             outline-offset: 2px;
         }
@@ -335,10 +551,272 @@
             accent-color: var(--button-primary-bg);
         }
 
-        #speedValue {
+        .row.fold-transport-row {
+            flex-wrap: nowrap;
+            gap: 4px;
+            margin-bottom: 16px;
+        }
+
+        .row.fold-transport-row .fold-transport-btn {
+            flex: 1 1 0;
+            min-width: 0;
+            width: auto;
+            height: 22px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 1;
+        }
+
+        .row.fold-transport-row .fold-transport-btn svg {
+            display: block;
+            pointer-events: none;
+            width: 18px;
+            height: 18px;
+        }
+
+        :root[data-theme="dark"] .row.fold-transport-row .fold-transport-btn.fold-transport-btn--active:not(:disabled) {
+            background: #fff;
+            border-color: #fff;
+            color: #000;
+        }
+
+        :root[data-theme="dark"] .row.fold-transport-row .fold-transport-btn.fold-transport-btn--active:not(:disabled):hover {
+            background: #e8e8ec;
+            border-color: #e8e8ec;
+        }
+
+        :root[data-theme="light"] .row.fold-transport-row .fold-transport-btn.fold-transport-btn--active:not(:disabled) {
+            background: #000;
+            border-color: #000;
+            color: #fff;
+        }
+
+        :root[data-theme="light"] .row.fold-transport-row .fold-transport-btn.fold-transport-btn--active:not(:disabled):hover {
+            background: #2a2a30;
+            border-color: #2a2a30;
+            color: #fff;
+        }
+
+        /* Fold + Speed + Shading: thin track, dice thumbs on black pad */
+        #foldPlayheadSlider,
+        #speedSlider {
+            --slider-fill-pct: 0%;
+        }
+
+        #foldPlayheadSlider,
+        #speedSlider,
+        #renderModeSlider {
+            --slider-track-h: 1.5px;
+            --slider-thumb-h: 16px;
+            height: 22px;
+            margin: 0;
+            padding: 0;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        #foldPlayheadSlider:disabled {
+            cursor: not-allowed;
+            opacity: 0.55;
+        }
+
+        #foldPlayheadSlider::-webkit-slider-runnable-track,
+        #speedSlider::-webkit-slider-runnable-track {
+            height: 1.5px;
+            border-radius: 1px;
+            background: linear-gradient(
+                to right,
+                var(--fold-slider-done) 0%,
+                var(--fold-slider-done) var(--slider-fill-pct, 0%),
+                var(--fold-slider-rest) var(--slider-fill-pct, 0%),
+                var(--fold-slider-rest) 100%
+            );
+        }
+
+        #renderModeSlider::-webkit-slider-runnable-track {
+            height: 1.5px;
+            border-radius: 1px;
+            background: var(--fold-slider-rest);
+        }
+
+        #foldPlayheadSlider::-webkit-slider-thumb,
+        #speedSlider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 10px;
+            height: 16px;
+            border: none;
+            border-radius: 3px;
+            background-color: #000;
+            background-image: url("icons/fold-playhead-thumb.svg");
+            background-repeat: no-repeat;
+            background-position: center center;
+            background-size: 10px 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+            margin-top: calc(-0.5 * (var(--slider-thumb-h) - var(--slider-track-h)));
+            cursor: grab;
+        }
+
+        #renderModeSlider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 10px;
+            height: 16px;
+            border: none;
+            border-radius: 3px;
+            background-color: #000;
+            background-image: url("icons/shading-slider-thumb.svg");
+            background-repeat: no-repeat;
+            background-position: center center;
+            background-size: 10px 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+            margin-top: calc(-0.5 * (var(--slider-thumb-h) - var(--slider-track-h)));
+            cursor: grab;
+        }
+
+        #foldPlayheadSlider:active::-webkit-slider-thumb,
+        #speedSlider:active::-webkit-slider-thumb,
+        #renderModeSlider:active::-webkit-slider-thumb {
+            cursor: grabbing;
+        }
+
+        #foldPlayheadSlider::-moz-range-track,
+        #speedSlider::-moz-range-track,
+        #renderModeSlider::-moz-range-track {
+            height: 1.5px;
+            border-radius: 1px;
+            background: var(--fold-slider-rest);
+        }
+
+        #foldPlayheadSlider::-moz-range-progress,
+        #speedSlider::-moz-range-progress {
+            height: 1.5px;
+            border-radius: 1px;
+            background: var(--fold-slider-done);
+        }
+
+        #foldPlayheadSlider::-moz-range-thumb,
+        #speedSlider::-moz-range-thumb {
+            width: 10px;
+            height: 16px;
+            border: none;
+            border-radius: 3px;
+            background-color: #000;
+            background-image: url("icons/fold-playhead-thumb.svg");
+            background-repeat: no-repeat;
+            background-position: center center;
+            background-size: 10px 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+            margin-top: calc(-0.5 * (var(--slider-thumb-h) - var(--slider-track-h)));
+            cursor: grab;
+        }
+
+        #renderModeSlider::-moz-range-thumb {
+            width: 10px;
+            height: 16px;
+            border: none;
+            border-radius: 3px;
+            background-color: #000;
+            background-image: url("icons/shading-slider-thumb.svg");
+            background-repeat: no-repeat;
+            background-position: center center;
+            background-size: 10px 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+            margin-top: calc(-0.5 * (var(--slider-thumb-h) - var(--slider-track-h)));
+            cursor: grab;
+        }
+
+        #foldPlayheadSlider:active::-moz-range-thumb,
+        #speedSlider:active::-moz-range-thumb,
+        #renderModeSlider:active::-moz-range-thumb {
+            cursor: grabbing;
+        }
+
+        :root[data-theme="light"] #foldPlayheadSlider::-webkit-slider-thumb,
+        :root[data-theme="light"] #speedSlider::-webkit-slider-thumb,
+        :root[data-theme="light"] #renderModeSlider::-webkit-slider-thumb {
+            filter: invert(1);
+        }
+
+        :root[data-theme="light"] #foldPlayheadSlider::-moz-range-thumb,
+        :root[data-theme="light"] #speedSlider::-moz-range-thumb,
+        :root[data-theme="light"] #renderModeSlider::-moz-range-thumb {
+            filter: invert(1);
+        }
+
+        :root[data-theme="dark"] #foldPlayheadSlider::-webkit-slider-thumb,
+        :root[data-theme="dark"] #speedSlider::-webkit-slider-thumb,
+        :root[data-theme="dark"] #renderModeSlider::-webkit-slider-thumb {
+            background-color: #3c3c48;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+            filter: brightness(1.12);
+        }
+
+        :root[data-theme="dark"] #foldPlayheadSlider::-moz-range-thumb,
+        :root[data-theme="dark"] #speedSlider::-moz-range-thumb,
+        :root[data-theme="dark"] #renderModeSlider::-moz-range-thumb {
+            background-color: #3c3c48;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+            filter: brightness(1.12);
+        }
+
+        #renderModeSlider::-moz-range-progress {
+            height: 1.5px;
+            border-radius: 1px;
+            background: var(--fold-slider-rest);
+        }
+
+        #speedValue,
+        #foldPlayheadLabel,
+        #renderModeValueLabel {
             font-size: 11px;
-            min-width: 40px;
             text-align: right;
+            color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .row.slider-labeled-row {
+            flex-wrap: nowrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .row.slider-labeled-row .slider-row-label {
+            flex: 0 0 4.25em;
+            width: 4.25em;
+            text-align: right;
+            font-size: 12px;
+            color: var(--text);
+            padding-right: 2px;
+            box-sizing: border-box;
+        }
+
+        .shading-slider-row .slider-row-label {
+            text-align: left;
+            padding-right: 6px;
+        }
+
+        .row.slider-labeled-row input[type="range"] {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .row.slider-labeled-row .slider-value-col {
+            flex: 0 0 3.75rem;
+            width: 3.75rem;
+            min-width: 3.75rem;
+            text-align: right;
+            box-sizing: border-box;
+        }
+
+        #foldPlayheadLabel.slider-value-col,
+        #speedValue.slider-value-col,
+        #renderModeValueLabel.slider-value-col {
+            font-size: 11px;
             color: var(--text-muted);
             font-variant-numeric: tabular-nums;
         }
@@ -379,36 +857,48 @@
             background: var(--button-hover);
         }
 
-        .render-mode-block {
+        /* Shading: ticks under track align with discrete stops (thumb ~10px → inset 5px) */
+        .shading-slider-slot {
+            flex: 1 1 auto;
+            min-width: 0;
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 3px;
+            justify-content: center;
+        }
+
+        .shading-slider-slot input[type="range"] {
+            flex: 0 0 auto;
             width: 100%;
         }
 
-        .render-mode-block label[for="renderModeSlider"] {
-            font-size: 11px;
-            color: var(--text-muted);
-        }
-
-        #renderModeSlider {
+        .shading-slider-ticks {
+            display: flex;
+            flex-direction: row;
+            justify-content: space-between;
             width: 100%;
+            height: 6px;
+            padding: 0 5px;
+            box-sizing: border-box;
+            align-items: flex-end;
+            pointer-events: none;
         }
 
-        .render-mode-stops {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 2px;
-            font-size: 9px;
-            line-height: 1.2;
-            color: var(--text-muted);
-            text-align: center;
-            user-select: none;
+        .shading-slider-ticks span {
+            width: 2px;
+            height: 5px;
+            border-radius: 0.5px;
+            flex-shrink: 0;
         }
 
-        .render-mode-stops span[data-mode-stop].active {
-            color: var(--text);
-            font-weight: 700;
+        :root[data-theme="dark"] .shading-slider-ticks span {
+            background: #fff;
+            opacity: 0.9;
+        }
+
+        :root[data-theme="light"] .shading-slider-ticks span {
+            background: var(--text);
+            opacity: 0.85;
         }
 
         #builderEdgeHint {
@@ -499,19 +989,19 @@
 
         .net-toolbar {
             display: flex;
-            flex-wrap: nowrap;
-            align-items: flex-start;
-            justify-content: space-between;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-start;
             gap: 6px;
             width: 100%;
         }
 
         .net-toolbar .net-icon-btn {
-            flex: 1 1 0;
-            min-width: 0;
-            width: 0;
-            aspect-ratio: 1;
-            height: auto;
+            flex: 0 0 auto;
+            box-sizing: border-box;
+            width: 34px;
+            height: 34px;
+            min-width: 34px;
             padding: 0;
             display: flex;
             align-items: center;
@@ -537,11 +1027,17 @@
             cursor: not-allowed;
         }
 
-        .net-toolbar .net-icon-btn img {
+        .net-toolbar .net-icon-btn img,
+        .net-toolbar .net-icon-btn svg {
             width: 22px;
             height: 22px;
             display: block;
             pointer-events: none;
+            flex-shrink: 0;
+        }
+
+        .net-toolbar .net-icon-btn svg path {
+            fill: currentColor;
         }
 
         :root[data-theme="light"] .net-toolbar .net-icon-btn img {
@@ -553,20 +1049,192 @@
             opacity: 0.95;
         }
 
-        .net-create-actions {
+        .net-subsection-title {
+            margin-top: 12px;
+            margin-bottom: 0;
+        }
+
+        .net-export-row {
             display: flex;
-            flex-wrap: nowrap;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-start;
             gap: 6px;
             width: 100%;
         }
 
-        .net-create-actions > button {
-            flex: 1;
+        /* Single-line category bar + expandable Image / 3D rows */
+        .net-export-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            width: 100%;
+        }
+
+        .net-export-main-row {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: stretch;
+            width: 100%;
+            border: 1px solid var(--input-border);
+            border-radius: 6px;
+            overflow: hidden;
+            background: var(--button-bg);
+        }
+
+        .net-export-main-btn {
+            flex: 1 1 0;
             min-width: 0;
+            margin: 0;
+            padding: 6px 4px;
+            font-size: 11px;
+            font-weight: 400;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            border: none;
+            border-right: 1px solid var(--input-border);
+            border-radius: 0;
+            background: transparent;
+            color: var(--text);
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+
+        .net-export-main-btn:last-child {
+            border-right: none;
+        }
+
+        .net-export-main-btn:hover:not(:disabled) {
+            background: var(--button-hover);
+        }
+
+        .net-export-main-btn:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: -2px;
+            z-index: 1;
+        }
+
+        .net-export-main-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .net-export-main-btn.net-export-main-btn--open {
+            background: var(--button-hover);
+            color: var(--text);
+        }
+
+        /* Submenus: same 4-column grid as main row, centered under Image (col 2) or 3D (col 3) */
+        .net-export-sub-dock {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            width: 100%;
+            margin-top: 6px;
+            align-items: start;
+        }
+
+        .net-export-sub-anchor {
+            display: flex;
+            justify-content: center;
+        }
+
+        .net-export-sub-anchor--image {
+            grid-column: 2;
+        }
+
+        .net-export-sub-anchor--3d {
+            grid-column: 3;
+        }
+
+        .net-export-sub-anchor[hidden] {
+            display: none !important;
+        }
+
+        .net-export-subrow-inner {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }
+
+        button.net-export-btn.net-export-sub-btn {
+            font-size: 10px;
+            padding: 2px 6px;
+            line-height: 1.2;
+            min-width: 0;
+        }
+
+        .net-export-btn {
+            flex: 0 0 auto;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 400;
+            letter-spacing: normal;
+            border-radius: 5px;
+            border: 1px solid var(--input-border);
+            background: var(--button-bg);
+            color: var(--text);
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .net-export-btn:hover:not(:disabled) {
+            background: var(--button-hover);
+        }
+
+        .net-export-btn:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        .net-export-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
         }
 
         #saveNetFeedback {
             margin-top: 6px;
+        }
+
+        .webm-download-offer {
+            margin-top: 8px;
+            line-height: 1.35;
+        }
+
+        /* Shown after WebM encode completes — directly under the Export buttons */
+        .webm-download-offer:not([hidden]) {
+            padding: 8px 8px 9px;
+            border-radius: 6px;
+            border: 1px solid var(--input-border);
+            background: var(--button-bg);
+        }
+
+        .webm-download-offer-msg:not([hidden]) {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 11px;
+            color: var(--section-label);
+        }
+
+        .webm-download-offer-bar {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            width: 100%;
+        }
+
+        button.webm-download-close {
+            flex-shrink: 0;
+            min-width: 32px;
+            padding: 4px 10px;
+            font-size: 20px;
+            line-height: 1;
+            font-weight: 300;
+            opacity: 0.9;
         }
 
         #createBaseBlock[hidden] {
@@ -683,44 +1351,170 @@
             height: auto;
             border-radius: 8px;
             border: 1px solid var(--panel-border, rgba(0, 0, 0, 0.12));
-            background: var(--page-bg, #fff);
+            background: #fff5c8;
             touch-action: none;
+        }
+
+        .face-hex-context-menu {
+            position: fixed;
+            z-index: 200;
+            min-width: 200px;
+            max-width: min(280px, calc(100vw - 16px));
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--panel-border);
+            background: var(--panel-bg);
+            box-shadow: var(--panel-shadow);
+            color: var(--text);
+        }
+
+        .face-hex-context-menu[hidden] {
+            display: none !important;
+        }
+
+        .face-hex-context-menu-title {
+            font-size: 12px;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+            color: var(--text-muted);
+        }
+
+        .face-hex-context-swatches {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+
+        button.face-hex-swatch {
+            width: 100%;
+            aspect-ratio: 1;
+            min-height: 28px;
+            padding: 0;
+            border-radius: 6px;
+            border: 1px solid var(--panel-border);
+            cursor: pointer;
+            box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+        }
+
+        :root[data-theme="dark"] button.face-hex-swatch {
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+        }
+
+        button.face-hex-swatch:focus-visible {
+            outline: 2px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        .face-hex-context-clear {
+            width: 100%;
+            margin: 0;
+            padding: 8px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            border: 1px solid var(--button-border);
+            background: var(--button-bg);
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        .face-hex-context-clear:hover {
+            background: var(--button-hover);
+        }
+
+        .face-hex-context-fold-block {
+            margin: 0;
+        }
+
+        .face-hex-context-fold-block .face-hex-context-fold-hint {
+            margin: 8px 0 0;
+            font-size: 11px;
+            line-height: 1.35;
+            color: var(--text-muted, #666);
         }
     </style>
 </head>
 <body>
-    <div id="info">Folding Polyhedron Net</div>
+    <div id="info">01-FOLD</div>
     <div id="builderEdgeHint" aria-hidden="true">+</div>
     <div id="trophyStrip" aria-label="Unlocked polyhedron trophies" hidden></div>
     <div id="container"></div>
 
+    <div id="faceHexContextMenu" class="face-hex-context-menu" hidden role="menu" aria-label="Face context menu">
+        <p id="faceHexContextMenuTitle" class="face-hex-context-menu-title">Face color</p>
+        <div id="faceHexContextMenuSwatches" class="face-hex-context-swatches"></div>
+        <button type="button" id="faceHexContextMenuClear" class="face-hex-context-clear">Clear override (net / palette)</button>
+        <div id="faceHexContextMenuFoldBlock" class="face-hex-context-fold-block" hidden>
+            <button type="button" id="faceHexContextMenuFlipHinge" class="face-hex-context-clear">Reverse hinge direction</button>
+            <p class="kbd-hint face-hex-context-fold-hint">Use <strong>Data</strong> export to save updated <code>foldAngleRad</code> values.</p>
+        </div>
+    </div>
+
     <div id="controls">
+        <div class="controls-brand-row">
+            <h1 class="controls-brand-title">01-FOLD</h1>
+            <label class="theme-pill-toggle">
+                <span id="darkCanvasLabel" class="sr-only">Dark theme for scene and interface</span>
+                <input type="checkbox" id="darkCanvas" name="darkCanvas" class="theme-toggle-input" checked role="switch" aria-checked="true" aria-labelledby="darkCanvasLabel">
+                <span class="theme-pill-track" aria-hidden="true">
+                    <span class="theme-pill-icon theme-pill-icon--sun">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <mask id="mask_theme_pill_sun" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">
+                                <rect width="20" height="20" fill="#D9D9D9"/>
+                            </mask>
+                            <g mask="url(#mask_theme_pill_sun)">
+                                <path d="M10 18.5L7.5 16H4V12.5L1.5 10L4 7.5V4H7.5L10 1.5L12.5 4H16V7.5L18.5 10L16 12.5V16H12.5L10 18.5ZM12.8333 12.8285C13.6111 12.0477 14 11.1033 14 9.99521C14 8.88729 13.6095 7.94444 12.8285 7.16667C12.0477 6.38889 11.1033 6 9.99521 6C8.88729 6 7.94444 6.39049 7.16667 7.17146C6.38889 7.95229 6 8.89674 6 10.0048C6 11.1127 6.39049 12.0556 7.17146 12.8333C7.95229 13.6111 8.89674 14 10.0048C14 11.1127 14 12.0556 12.8333 12.8285ZM10 16.375L11.875 14.5H14.5V11.875L16.375 10L14.5 8.125V5.5H11.875L10 3.625L8.125 5.5H5.5V8.125L3.625 10L5.5 11.875V14.5H8.125L10 16.375Z" fill="currentColor"/>
+                            </g>
+                        </svg>
+                    </span>
+                    <span class="theme-pill-icon theme-pill-icon--moon">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <mask id="mask_theme_pill_moon" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">
+                                <rect width="20" height="20" fill="#D9D9D9"/>
+                            </mask>
+                            <g mask="url(#mask_theme_pill_moon)">
+                                <path d="M10.0094 14C11.1134 14 12.0545 13.6111 12.8327 12.8333C13.6109 12.0556 14 11.1127 14 10.0048C14 8.89674 13.6102 7.95229 12.8306 7.17146C12.051 6.39049 11.1083 6 10.0023 6C9.7091 6 9.42375 6.03125 9.14625 6.09375C8.86861 6.15625 8.59764 6.25 8.33333 6.375C9.04167 6.69444 9.60764 7.18188 10.0312 7.83729C10.4549 8.49257 10.6667 9.21479 10.6667 10.004C10.6667 10.793 10.4549 11.5104 10.0312 12.1562C9.60764 12.8021 9.04167 13.2917 8.33333 13.625C8.59931 13.75 8.87201 13.8438 9.15146 13.9062C9.43076 13.9688 9.71674 14 10.0094 14ZM10 18.5L7.5 16H4V12.5L1.5 10L4 7.5V4H7.5L10 1.5L12.5 4H16V7.5L18.5 10L16 12.5V16H12.5L10 18.5ZM10 16.375L11.875 14.5H14.5V11.875L16.375 10L14.5 8.125V5.5H11.875L10 3.625L8.125 5.5H5.5V8.125L3.625 10L5.5 11.875V14.5H8.125L10 16.375Z" fill="currentColor"/>
+                            </g>
+                        </svg>
+                    </span>
+                    <span class="theme-pill-thumb"></span>
+                </span>
+            </label>
+        </div>
         <section class="control-section" aria-labelledby="sec-net">
             <h2 class="section-title" id="sec-net">Net</h2>
             <input type="file" id="netFile" accept=".json" hidden>
-            <div class="net-toolbar" role="toolbar" aria-label="Net files and export">
+            <div class="net-toolbar" role="toolbar" aria-label="Net file actions">
                 <button type="button" class="net-icon-btn" id="loadNetFileBtn" title="Load net from file" aria-label="Load net from file">
                     <img src="icons/open_file.svg" alt="" width="24" height="24" decoding="async">
                 </button>
                 <button type="button" class="net-icon-btn" id="saveNetToListBtn" title="Save net to Saved nets" aria-label="Save net to list">
                     <img src="icons/save_to_list.svg" alt="" width="24" height="24" decoding="async">
                 </button>
-                <button type="button" class="net-icon-btn" id="exportNetJsonBtn" title="Export net to JSON" aria-label="Export net to JSON">
-                    <img src="icons/file_json.svg" alt="" width="24" height="24" decoding="async">
+                <button type="button" class="net-icon-btn" id="toggleCreateSectionBtn" aria-expanded="false" title="Create a net" aria-label="Create a net">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <mask id="mask_net_btn_create" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+                            <rect width="24" height="24" fill="#D9D9D9"/>
+                        </mask>
+                        <g mask="url(#mask_net_btn_create)">
+                            <path d="M11 18H13V15H16V13H13V10H11V13H8V15H11V18ZM6 22C5.45 22 4.97917 21.8042 4.5875 21.4125C4.19583 21.0208 4 20.55 4 20V4C4 3.45 4.19583 2.97917 4.5875 2.5875C4.97917 2.19583 5.45 2 6 2H14L20 8V20C20 20.55 19.8042 21.0208 19.4125 21.4125C19.0208 21.8042 18.55 22 18 22H6ZM13 9V4H6V20H18V9H13Z" fill="currentColor"/>
+                        </g>
+                    </svg>
                 </button>
-                <button type="button" class="net-icon-btn" id="exportPngButton" title="Export to PNG — current view, transparent background" aria-label="Export to PNG">
-                    <img src="icons/file_png.svg" alt="" width="24" height="24" decoding="async">
-                </button>
-                <button type="button" class="net-icon-btn" id="exportSvgButton" title="Export to SVG — current view as vector paths" aria-label="Export to SVG">
-                    <img src="icons/file_svg.svg" alt="" width="24" height="24" decoding="async">
-                </button>
-                <button type="button" class="net-icon-btn" id="exportObjButton" title="Export to OBJ — Wavefront 3D mesh" aria-label="Export to OBJ">
-                    <img src="icons/file_obj.svg" alt="" width="24" height="24" decoding="async">
+                <button type="button" class="net-icon-btn" id="editLoadedNetBtn" disabled title="Load a net first" aria-label="Edit loaded net">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <mask id="mask_net_btn_edit" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+                            <rect width="24" height="24" fill="#D9D9D9"/>
+                        </mask>
+                        <g mask="url(#mask_net_btn_edit)">
+                            <path d="M14 22V18.925L19.525 13.425C19.675 13.275 19.8417 13.1667 20.025 13.1C20.2083 13.0333 20.3917 13 20.575 13C20.775 13 20.9667 13.0375 21.15 13.1125C21.3333 13.1875 21.5 13.3 21.65 13.45L22.575 14.375C22.7083 14.525 22.8125 14.6917 22.8875 14.875C22.9625 15.0583 23 15.2417 23 15.425C23 15.6083 22.9667 15.7958 22.9 15.9875C22.8333 16.1792 22.725 16.35 22.575 16.5L17.075 22H14ZM15.5 20.5H16.45L19.475 17.45L19.025 16.975L18.55 16.525L15.5 19.55V20.5ZM6 22C5.45 22 4.97917 21.8042 4.5875 21.4125C4.19583 21.0208 4 20.55 4 20V4C4 3.45 4.19583 2.97917 4.5875 2.5875C4.97917 2.19583 5.45 2 6 2H14L20 8V11H18V9H13V4H6V20H12V22H6ZM19.025 16.975L18.55 16.525L19.475 17.45L19.025 16.975Z" fill="currentColor"/>
+                        </g>
+                    </svg>
                 </button>
             </div>
             <div class="row fill">
-                <select id="presetNets" aria-label="Load a preset net">
-            <option value="">Load a preset net</option>
+                <select id="presetNets" aria-label="Polyhedral nets">
+            <option value="">Polyhedral nets</option>
             <optgroup label="Platonic solids">
               <option value="tetrahedron-top">Tetrahedron</option>
               <option value="cube-top">Cube</option>
@@ -730,9 +1524,22 @@
             </optgroup>
             <optgroup label="Demos">
               <option value="cube-irregular-base-top">Cube (irregular base quad)</option>
+              <option value="torus-wolfram-1-net">Torus (Wolfram demo 1 — 9 quads)</option>
             </optgroup>
             <optgroup label="Catalan solids">
               <option value="rhombic-dodecahedron-net">Rhombic Dodecahedron</option>
+              <option value="triakis-tetrahedron-net">Triakis Tetrahedron</option>
+              <option value="triakis-octahedron-net">Triakis Octahedron</option>
+              <option value="tetrakis-hexahedron-net">Tetrakis Hexahedron</option>
+              <option value="deltoidal-icositetrahedron-net">Deltoidal Icositetrahedron</option>
+              <option value="disdyakis-dodecahedron-net">Disdyakis Dodecahedron</option>
+              <option value="rhombic-triacontahedron-net">Rhombic Triacontahedron</option>
+              <option value="triakis-icosahedron-net">Triakis Icosahedron</option>
+              <option value="pentakis-dodecahedron-net">Pentakis Dodecahedron</option>
+              <option value="deltoidal-hexecontahedron-net">Deltoidal Hexecontahedron</option>
+              <option value="disdyakis-triacontahedron-net">Disdyakis Triacontahedron</option>
+              <option value="pentagonal-icositetrahedron-laevo-net">Pentagonal Icositetrahedron (laevo)</option>
+              <option value="pentagonal-hexecontahedron-laevo-net">Pentagonal Hexecontahedron (laevo)</option>
             </optgroup>
             <optgroup label="Archimedean — quasi-regular">
               <option value="cuboctahedron-top">Cuboctahedron</option>
@@ -762,12 +1569,37 @@
                     <option value="">Saved nets</option>
                 </select>
             </div>
-            <div class="row fill" style="margin-top: 2px;">
-                <div class="net-create-actions">
-                    <button type="button" id="toggleCreateSectionBtn" aria-expanded="false">Create a net</button>
-                    <button type="button" id="editLoadedNetBtn" disabled title="Load a net first">Edit net</button>
+            <h2 class="section-title net-subsection-title" id="sec-net-export">Export</h2>
+            <div class="net-export-stack" aria-labelledby="sec-net-export">
+                <div class="net-export-main-row" role="toolbar" aria-label="Export categories">
+                    <button type="button" class="net-export-main-btn" id="exportNetJsonBtn" title="Export net structure to JSON" aria-label="Export data as JSON">Data</button>
+                    <button type="button" class="net-export-main-btn" id="exportImageToggleBtn" aria-expanded="false" aria-controls="exportImageSubrow" title="PNG or SVG — current view" aria-label="Image export options">Image</button>
+                    <button type="button" class="net-export-main-btn" id="export3dToggleBtn" aria-expanded="false" aria-controls="export3dSubrow" title="OBJ or STL mesh" aria-label="3D mesh export options">3D</button>
+                    <button type="button" class="net-export-main-btn" id="exportWebmButton" title="Export WebM video — when encoding finishes, use Save video file below" aria-label="Export video as WebM">Video</button>
+                </div>
+                <div class="net-export-sub-dock">
+                    <div id="exportImageSubrow" class="net-export-sub-anchor net-export-sub-anchor--image" hidden role="group" aria-label="Image formats">
+                        <div class="net-export-subrow-inner">
+                            <button type="button" class="net-export-btn net-export-sub-btn" id="exportPngButton" title="PNG — current view, transparent background" aria-label="Export to PNG">PNG</button>
+                            <button type="button" class="net-export-btn net-export-sub-btn" id="exportSvgButton" title="SVG — current view as vector paths" aria-label="Export to SVG">SVG</button>
+                        </div>
+                    </div>
+                    <div id="export3dSubrow" class="net-export-sub-anchor net-export-sub-anchor--3d" hidden role="group" aria-label="3D mesh formats">
+                        <div class="net-export-subrow-inner">
+                            <button type="button" class="net-export-btn net-export-sub-btn" id="exportObjButton" title="OBJ — Wavefront 3D mesh" aria-label="Export to OBJ">OBJ</button>
+                            <button type="button" class="net-export-btn net-export-sub-btn" id="exportStlButton" title="STL — binary mesh for 3D printing" aria-label="Export to STL">STL</button>
+                        </div>
+                    </div>
                 </div>
             </div>
+            <p id="webmDownloadOffer" class="save-preset-feedback webm-download-offer" hidden aria-live="polite">
+                <span id="webmDownloadOfferText" class="webm-download-offer-msg" hidden></span>
+                <span class="webm-download-offer-bar">
+                    <button type="button" class="net-export-btn" id="webmSaveFileBtn" hidden>Save video file</button>
+                    <button type="button" class="net-export-btn webm-download-close" id="webmDownloadDismissBtn" hidden title="Close" aria-label="Close">×</button>
+                </span>
+            </p>
+            <p id="webmExportStatus" class="save-preset-feedback" hidden aria-live="polite"></p>
             <p id="saveNetFeedback" class="save-preset-feedback" hidden aria-live="polite"></p>
         </section>
 
@@ -922,55 +1754,170 @@
 
         <section class="control-section" aria-labelledby="sec-look">
             <h2 class="section-title" id="sec-look">Appearance</h2>
-            <label class="theme-toggle">
-                <span class="theme-toggle-label" id="darkCanvasLabel">Dark background</span>
-                <input type="checkbox" id="darkCanvas" name="darkCanvas" class="theme-toggle-input" checked role="switch" aria-checked="true" aria-labelledby="darkCanvasLabel">
-                <span class="theme-toggle-track" aria-hidden="true"><span class="theme-toggle-thumb"></span></span>
-            </label>
-            <div class="check-row">
-                <input type="checkbox" id="colorBySidesCheckbox" name="colorBySides" checked>
-                <label for="colorBySidesCheckbox">Color coordinated by sides</label>
+            <div class="net-export-main-row appearance-look-row" role="group" aria-label="Face look">
+                <button type="button" class="net-export-main-btn net-export-main-btn--open" data-appearance-mode="solid" aria-pressed="true"
+                    title="Solid: colors from the net JSON when Color by sides is off; dye palettes tint by polygon type when it is on."
+                    aria-label="Solid look. Net JSON colors when Color by sides is off; palettes tint by polygon type when on.">Solid</button>
+                <button type="button" class="net-export-main-btn" data-appearance-mode="texture" aria-pressed="false"
+                    title="Texture: Washi or cloth on each face. Color by sides still applies where the material uses tint."
+                    aria-label="Texture look. Washi or cloth; Color by sides may still tint.">Texture</button>
+                <button type="button" class="net-export-main-btn" data-appearance-mode="dye" aria-pressed="false"
+                    title="Dye: palette-first coloring by side count. Color by sides turns on automatically in this mode."
+                    aria-label="Dye look. Palette by side count; Color by sides turns on automatically.">Dye</button>
             </div>
-            <div class="check-row">
-                <input type="checkbox" id="translucentStellationsCheckbox" name="translucentStellations" checked>
-                <label for="translucentStellationsCheckbox">Translucent stellations</label>
+            <div id="appearanceTexturePanel" class="cloth-atlas-subpanel" hidden>
+                <div class="row fill tight appearance-palette-row">
+                    <label for="appearanceTextureKindSelect">Texture source</label>
+                    <select id="appearanceTextureKindSelect" aria-label="Face texture source">
+                        <option value="washiSamples">Washi samples (per polygon)</option>
+                        <option value="clothAtlas">One cloth (atlas UV)</option>
+                    </select>
+                </div>
+                <div id="clothAtlasOptionsWrap" class="cloth-atlas-subpanel" hidden>
+                    <div class="row fill tight appearance-palette-row">
+                        <label for="clothAtlasPatternSelect">Cloth layout</label>
+                        <select id="clothAtlasPatternSelect" aria-label="Cloth atlas layout">
+                            <option value="uniform">Same cloth on every face</option>
+                            <option value="alternateTwo">Alternate two cloths (odd / even face #)</option>
+                            <option value="alternateTint">Alternate tints (one cloth)</option>
+                        </select>
+                    </div>
+                    <div class="row fill tight appearance-palette-row">
+                        <label for="clothAtlasSelectA">Cloth A</label>
+                        <select id="clothAtlasSelectA" aria-label="Primary cloth texture"></select>
+                    </div>
+                    <div id="clothAtlasClothBRow" class="row fill tight appearance-palette-row" hidden>
+                        <label for="clothAtlasSelectB">Cloth B</label>
+                        <select id="clothAtlasSelectB" aria-label="Second cloth for alternating faces"></select>
+                    </div>
+                    <div id="clothAtlasTintRow" class="row tight appearance-palette-row" hidden style="flex-wrap:wrap;gap:8px;align-items:center;">
+                        <label for="clothAtlasTintA">Tint A</label>
+                        <input type="color" id="clothAtlasTintA" value="#ffffff" aria-label="Tint for odd-numbered faces">
+                        <label for="clothAtlasTintB">Tint B</label>
+                        <input type="color" id="clothAtlasTintB" value="#e8dff2" aria-label="Tint for even-numbered faces">
+                    </div>
+                    <p class="kbd-hint" style="margin-top:6px;margin-bottom:0;">More cloths: add PNGs under <code>textures/cloth/</code> and entries to <code>CLOTH_ATLAS_REGISTRY</code> in <code>script.js</code>.</p>
+                </div>
             </div>
+            <div class="appearance-color-block">
+                <label class="appearance-toggle-row">
+                    <span class="appearance-toggle-text">Color by sides</span>
+                    <input type="checkbox" id="colorBySidesCheckbox" name="colorBySides" class="theme-toggle-input" checked role="switch" aria-checked="true">
+                    <span class="theme-pill-track" aria-hidden="true"><span class="theme-pill-thumb"></span></span>
+                </label>
+                <div class="row fill tight appearance-palette-row">
+                    <label for="dyePaletteSelect">Palette</label>
+                    <select id="dyePaletteSelect" aria-label="Dye or color palette when Color by sides is on">
+                        <option value="natural">Natural (default)</option>
+                        <option value="indigo">Indigo</option>
+                        <option value="ochre">Ochre</option>
+                        <option value="funghi">Funghi</option>
+                        <option value="flora">Flora</option>
+                        <option value="kakishibu">Kakishibu</option>
+                        <option value="beni">Beni (madder)</option>
+                        <option value="neoboletus">Neoboletus praestigator (fabric scans)</option>
+                        <option value="boletopsis-grisea">Boletopsis grisea (fabric scans)</option>
+                        <option value="cortinarius-neosanguineus">Cortinarius neosanguineus (fabric scans)</option>
+                        <option value="hypomyces-lactifluorum">Hypomyces lactifluorum (fabric scans)</option>
+                        <option value="hydnellum-squamosus">Hydnellum squamosus (fabric scans)</option>
+                        <option value="gymnopilus-ventricosus">Gymnopilus ventricosus (fabric scans)</option>
+                        <option value="echinodontium-tinctorium">Echinodontium tinctorium (fabric scans)</option>
+                        <option value="xerocomellus-zelleri">Xerocomellus zelleri (fabric scans)</option>
+                        <option value="ramaria">Ramaria (fabric scans)</option>
+                    </select>
+                </div>
+                <p id="appearanceSwatchScanBlocked" class="kbd-hint" style="margin-top:2px;margin-bottom:0;" hidden>Fabric-scan palettes need Solid or Dye look (not Texture). Switch look above, or pick a flat palette.</p>
+                <div id="swatchPaletteOptionsWrap" class="cloth-atlas-subpanel" hidden>
+                    <div class="row fill tight appearance-palette-row">
+                        <label for="swatchApplyModeSelect">Swatch layout</label>
+                        <select id="swatchApplyModeSelect" aria-label="How to assign dye swatches to faces">
+                            <option value="uniformPick">One swatch (choose below)</option>
+                            <option value="uniformRandom">One random swatch (whole net)</option>
+                            <option value="perFaceRandom">Random per face (same family)</option>
+                        </select>
+                    </div>
+                    <div id="swatchUniformPickRow" class="row fill tight appearance-palette-row appearance-swatch-pick-row" hidden>
+                        <label for="swatchUniformPickSelect">Swatch</label>
+                        <select id="swatchUniformPickSelect" aria-label="Uniform swatch for all faces"></select>
+                    </div>
+                    <p class="kbd-hint" style="margin-top:6px;margin-bottom:0;">Solid or Dye look keeps scans on faces (no Washi/cloth layer on top).</p>
+                </div>
+            </div>
+            <div id="appearanceCustomRow" class="appearance-custom-row" hidden>
+                <span class="appearance-custom-label">Custom faces (<span id="appearanceCustomCount">0</span>)</span>
+                <button type="button" id="appearanceClearFaceOverridesBtn" class="appearance-custom-clear-btn">Clear</button>
+            </div>
+            <p class="kbd-hint" style="margin-top:4px;margin-bottom:0;">Right-click a face: palette colors or fabric-scan swatches when available. Escape or click away to close.</p>
             <!-- Trophy preview (gold PBR) — feature paused; see script.js listener comment to restore.
             <div class="check-row">
                 <input type="checkbox" id="trophyPreviewGoldCheckbox" name="trophyPreviewGold">
                 <label for="trophyPreviewGoldCheckbox">Trophy preview (gold PBR)</label>
             </div>
             -->
-            <div class="check-row">
-                <input type="checkbox" id="toggleNormals" name="toggleNormals">
-                <label for="toggleNormals">Show face normals</label>
-            </div>
-            <div class="render-mode-block">
-                <label for="renderModeSlider">Shading</label>
-                <input type="range" id="renderModeSlider" min="0" max="3" value="2" step="1"
-                    aria-valuemin="0" aria-valuemax="3" aria-valuenow="2"
-                    aria-label="Shading mode">
-                <div class="render-mode-stops" id="renderModeStops">
-                    <span data-mode-stop="0">Wire</span>
-                    <span data-mode-stop="1">Glass</span>
-                    <span data-mode-stop="2">Flat</span>
-                    <span data-mode-stop="3">Render</span>
+            <label class="appearance-toggle-row">
+                <span class="appearance-toggle-text">Face normals</span>
+                <input type="checkbox" id="toggleNormals" name="toggleNormals" class="theme-toggle-input" role="switch" aria-checked="false">
+                <span class="theme-pill-track" aria-hidden="true"><span class="theme-pill-thumb"></span></span>
+            </label>
+            <div class="row tight slider-labeled-row shading-slider-row">
+                <label class="slider-row-label" for="renderModeSlider">Shading</label>
+                <div class="shading-slider-slot">
+                    <input type="range" id="renderModeSlider" min="0" max="3" value="2" step="1"
+                        aria-valuemin="0" aria-valuemax="3" aria-valuenow="2"
+                        aria-label="Shading mode">
+                    <div class="shading-slider-ticks" aria-hidden="true">
+                        <span></span><span></span><span></span><span></span>
+                    </div>
                 </div>
+                <span id="renderModeValueLabel" class="slider-value-col">Flat</span>
             </div>
         </section>
 
         <section class="control-section" aria-labelledby="sec-folding">
             <h2 class="section-title" id="sec-folding">Folding</h2>
-            <div class="row">
-                <button type="button" id="foldButton" class="primary">Animated Fold</button>
-                <button type="button" id="pauseButton" disabled>Pause</button>
-                <button type="button" id="instantFoldButton">Fold</button>
+            <div class="row fold-transport-row">
+                <button type="button" id="foldJumpToStart" class="fold-transport-btn" title="Jump to flat net (first frame)" aria-label="Jump to flat net, first frame">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 18V6H8V18H6ZM17 18L11 12L17 6L18.4 7.4L13.8 12L18.4 16.6L17 18Z" fill="currentColor"/></svg>
+                </button>
+                <button type="button" id="foldSkipBack" class="fold-transport-btn" title="Skip back one hinge" aria-label="Skip back one hinge">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M11 18L5 12L11 6L12.4 7.4L7.825 12L12.4 16.6L11 18ZM17.6 18L11.6 12L17.6 6L19 7.4L14.425 12L19 16.6L17.6 18Z" fill="currentColor"/></svg>
+                </button>
+                <button type="button" id="foldPlayReverse" class="fold-transport-btn" title="Play backward" aria-label="Play backward">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 18L8 12L14 6L15.4 7.4L10.8 12L15.4 16.6L14 18Z" fill="currentColor"/></svg>
+                </button>
+                <button type="button" id="foldPlayPause" class="fold-transport-btn" title="Play or pause" aria-label="Play or pause folding animation">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12.6 12L8 7.4L9.4 6L15.4 12L9.4 18L8 16.6L12.6 12Z" fill="currentColor"/></svg>
+                </button>
+                <button type="button" id="foldSkipForward" class="fold-transport-btn" title="Skip forward one hinge" aria-label="Skip forward one hinge">
+                    <svg width="24" height="24" viewBox="0 0 24 25" fill="none" aria-hidden="true"><path d="M9.575 12.5L5 7.70833L6.4 6.25L12.4 12.5L6.4 18.75L5 17.2917L9.575 12.5ZM16.175 12.5L11.6 7.70833L13 6.25L19 12.5L13 18.75L11.6 17.2917L16.175 12.5Z" fill="currentColor"/></svg>
+                </button>
+                <button type="button" id="instantFoldButton" class="fold-transport-btn" title="Jump to fully folded (no animation between hinges)" aria-label="Jump to fully folded">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.99961 18L5.59961 16.6L10.1996 12L5.59961 7.4L6.99961 6L12.9996 12L6.99961 18ZM15.9996 18V6H17.9996V18H15.9996Z" fill="currentColor"/></svg>
+                </button>
             </div>
-            <div class="row tight">
-                <label for="speedSlider">Speed</label>
+            <div class="row tight fold-playhead-row slider-labeled-row">
+                <label class="slider-row-label" for="foldPlayheadSlider">Fold</label>
+                <input type="range" id="foldPlayheadSlider" min="0" max="1000" value="0" step="1"
+                    disabled
+                    aria-valuemin="0" aria-valuemax="1000" aria-valuenow="0"
+                    aria-label="Fold progress along all hinges">
+                <span id="foldPlayheadLabel" class="slider-value-col">—</span>
+            </div>
+            <div class="row tight speed-slider-row slider-labeled-row">
+                <label class="slider-row-label" for="speedSlider">Speed</label>
                 <input type="range" id="speedSlider" min="10" max="4000" value="500" step="10">
-                <span id="speedValue">500 ms</span>
+                <span id="speedValue" class="slider-value-col">500 ms</span>
             </div>
+            <label class="appearance-toggle-row" id="foldDirectionChallengeRow"
+                title="Requires a loaded net with foldAngleRad on every connection (not while building a net).">
+                <span class="appearance-toggle-text">Fold-direction challenge</span>
+                <input type="checkbox" id="foldDirectionChallengeToggle" name="foldDirectionChallenge"
+                    class="theme-toggle-input" role="switch" aria-checked="false" disabled>
+                <span class="theme-pill-track" aria-hidden="true"><span class="theme-pill-thumb"></span></span>
+            </label>
+            <p id="foldDirectionChallengeHint" class="kbd-hint" style="margin-top:2px;margin-bottom:0;" hidden>
+                Right-click a flap face (not the base) to flip that hinge. Export <strong>Data</strong> to write angles into JSON.
+            </p>
         </section>
 
         <section
@@ -979,14 +1926,30 @@
             aria-labelledby="sec-stellation"
             aria-disabled="true"
         >
-            <h2 class="section-title" id="sec-stellation">Stellation</h2>
-            <p class="stellation-blurb">
-                Classical <strong>stellation</strong> extends each face plane until new cells close up—famous on the
-                dodecahedron and icosahedron (e.g. Miller’s set), and on the Kepler–Poinsot stars. The
-                <strong>Stellation diagram</strong> mode plots where other face planes meet one face plane (including
-                for the rhombic dodecahedron's rhombi). <strong>Uniform pyramids</strong> mode adds a congruent pyramid on
-                every face (height slider). In diagram mode, region clicks build a partial classical-style stellation on the reference face; full Miller cell closure can be added later.
-            </p>
+            <div class="section-title-row">
+                <h2 class="section-title" id="sec-stellation">Stellation</h2>
+                <button type="button" class="stellation-info-btn" id="stellationInfoBtn"
+                    aria-expanded="false" aria-controls="stellationHelpPanel"
+                    title="About stellation" aria-label="About stellation — show or hide detailed explanation">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <mask id="mask_stellation_info" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">
+                            <rect width="20" height="20" fill="#D9D9D9"/>
+                        </mask>
+                        <g mask="url(#mask_stellation_info)">
+                            <path d="M9.25 14H10.75V9H9.25V14ZM10.5312 7.28563C10.6771 7.14271 10.75 6.96563 10.75 6.75438C10.75 6.54313 10.6785 6.36458 10.5356 6.21875C10.3927 6.07292 10.2156 6 10.0044 6C9.79313 6 9.61458 6.07146 9.46875 6.21437C9.32292 6.35729 9.25 6.53437 9.25 6.74562C9.25 6.95687 9.32146 7.13542 9.46438 7.28125C9.60729 7.42708 9.78438 7.5 9.99563 7.5C10.2069 7.5 10.3854 7.42854 10.5312 7.28563ZM10.0058 18C8.90472 18 7.86806 17.7917 6.89583 17.375C5.92361 16.9583 5.07292 16.3854 4.34375 15.6562C3.61458 14.9271 3.04167 14.0767 2.625 13.105C2.20833 12.1333 2 11.0951 2 9.99042C2 8.88569 2.20833 7.85069 2.625 6.88542C3.04167 5.92014 3.61458 5.07292 4.34375 4.34375C5.07292 3.61458 5.92333 3.04167 6.895 2.625C7.86667 2.20833 8.90486 2 10.0096 2C11.1143 2 12.1493 2.20833 13.1146 2.625C14.0799 3.04167 14.9271 3.61458 15.6562 4.34375C16.3854 5.07292 16.9583 5.92167 17.375 6.89C17.7917 7.85847 18 8.89319 18 9.99417C18 11.0953 17.7917 12.1319 17.375 13.1042C16.9583 14.0764 16.3854 14.9271 15.6562 15.6562C14.9271 16.3854 14.0783 16.9583 13.11 17.375C12.1415 17.7917 11.1068 18 10.0058 18ZM10 16.5C11.8056 16.5 13.3403 15.8681 14.6042 14.6042C15.8681 13.3403 16.5 11.8056 16.5 10C16.5 8.19444 15.8681 6.65972 14.6042 5.39583C13.3403 4.13194 11.8056 3.5 10 3.5C8.19444 3.5 6.65972 4.13194 5.39583 5.39583C4.13194 6.65972 3.5 8.19444 3.5 10C3.5 11.8056 4.13194 13.3403 5.39583 14.6042C6.65972 15.8681 8.19444 16.5 10 16.5Z" fill="currentColor"/>
+                        </g>
+                    </svg>
+                </button>
+            </div>
+            <div id="stellationHelpPanel" class="stellation-help-panel" hidden>
+                <p class="stellation-blurb" style="margin-top:0;">
+                    Classical <strong>stellation</strong> extends each face plane until new cells close up—famous on the
+                    dodecahedron and icosahedron (e.g. Miller’s set), and on the Kepler–Poinsot stars. The
+                    <strong>Stellation diagram</strong> mode plots where other face planes meet one face plane (including
+                    for the rhombic dodecahedron's rhombi). <strong>Uniform pyramids</strong> mode adds a congruent pyramid on
+                    every face (height slider). In diagram mode, region clicks build a partial classical-style stellation on the reference face; full Miller cell closure can be added later.
+                </p>
+            </div>
             <p id="stellationPolyHint" class="stellation-blurb" hidden></p>
             <p id="stellationLockedNote" class="stellation-blurb">Fold the net fully to explore stellation.</p>
             <div class="stellation-interactive row fill">
@@ -1002,6 +1965,13 @@
                         <option value="uniform-caps">Uniform pyramids on every face</option>
                     </optgroup>
                 </select>
+            </div>
+            <div id="opaqueStellationsRow" class="stellation-interactive" hidden>
+                <label class="appearance-toggle-row">
+                    <span class="appearance-toggle-text">Opaque stellations</span>
+                    <input type="checkbox" id="opaqueStellationsCheckbox" name="opaqueStellations" class="theme-toggle-input" role="switch" aria-checked="false">
+                    <span class="theme-pill-track" aria-hidden="true"><span class="theme-pill-thumb"></span></span>
+                </label>
             </div>
             <div
                 id="stellationCapsRow"

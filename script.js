@@ -1,4 +1,4 @@
-// Polyhedra Net Folder — script v1.60
+// Polyhedra Net Folder — script v1.74
 
 // --- Imports ---
 import * as THREE from "three";
@@ -37,6 +37,15 @@ let stellDiagramPanLastCssY = 0;
 let stellDiagramSuppressNextClick = false;
 let stellDiagramPanHadMotion = false;
 let stellDiagramPanUsedAltLeft = false;
+/** Region under pointer (centroidKey); used for hover outline on the diagram canvas. */
+let stellDiagramHoverCentroidKey = null;
+
+/** Stellation diagram 2D canvas palette (fixed; not theme-derived). */
+const STELL_DIAGRAM_BG = "#fff5c8";
+const STELL_DIAGRAM_LINE = "#c7be97";
+const STELL_DIAGRAM_HOVER_STROKE = "#5d534e";
+const STELL_DIAGRAM_SELECTED_STROKE = "#b11315";
+const STELL_DIAGRAM_SELECTED_FILL = "#c7be97";
 
 // --- Configuration ---
 const sideLength = 3;
@@ -51,22 +60,35 @@ let isPaused = false;
 let animationStartTime = 0;
 let pausedElapsedTime = 0;
 let currentAnimationStage = 0;
+/** 0 = flat … NUM_ANIMATION_STAGES = all hinges closed (rebuilt from flat each update). */
+let foldPlayhead = 0;
+let foldPlaybackActive = false;
+let foldPlaybackDir = 1;
+let lastFoldPlaybackTime = 0;
+let updatingPlayheadSlider = false;
 let startQuaternions = {}; // Use let for reset
 let targetQuaternions = {}; // Use let for reset
 let pivotsInCurrentStage = [];
 
 // --- DOM Elements ---
-let foldButton;
 let instantFoldButton;
-let pauseButton;
+let foldPlayPause;
+let foldPlayReverse;
+let foldJumpToStart;
+let foldSkipBack;
+let foldSkipForward;
+let foldPlayheadSlider;
+let foldPlayheadLabel;
 let speedSlider;
 let speedValueSpan;
 let toggleNormalsCheckbox;
 let netFileInput;
 let infoDisplay;
 let exportObjButton;
+let exportStlButton;
 let exportPngButton;
 let exportSvgButton;
+let exportWebmButton;
 let darkCanvasCheckbox;
 let renderModeSlider;
 let ambientLight;
@@ -74,6 +96,30 @@ let hemiLight;
 let directionalLight;
 let fillLight;
 let shadowGround = null;
+/** XYZ crosshair at origin; hidden in Render shading for a clean frame. */
+let crosshairAxesHelper = null;
+/** World-space center of face meshes; crosshair + {@link TrackballControls#target} stay here. */
+const foldedNetCenterWorld = new THREE.Vector3();
+
+/** Active WebM export (WebCodecs VideoEncoder + webm-muxer); null when idle. */
+let webmCodecSession = null;
+
+let webmMuxerImportPromise = null;
+
+let pendingWebmBlob = null;
+let pendingWebmFilename = "export.webm";
+let webmDownloadOfferEl = null;
+let webmDownloadOfferTextEl = null;
+let webmSaveFileBtn = null;
+let webmDownloadDismissBtn = null;
+let webmExportStatusEl = null;
+
+function setWebmExportStatus(message, visible = true) {
+    if (!webmExportStatusEl) return;
+    const m = (message || "").trim();
+    webmExportStatusEl.textContent = m;
+    webmExportStatusEl.hidden = !visible || m.length === 0;
+}
 
 /** Net builder: interactive CREATE mode */
 let edgePickGroup = null;
@@ -151,9 +197,25 @@ const POLY_KEY_TO_PRESET_NET_FILE = {
     "3.3.3.3.4": "snub-cube-top.json",
     "3.3.3.3.5": "snub-dodecahedron-top.json",
     "rhombic-dodecahedron": "rhombic-dodecahedron-net.json",
+    "triakis-tetrahedron": "triakis-tetrahedron-net.json",
+    "triakis-octahedron": "triakis-octahedron-net.json",
+    "tetrakis-hexahedron": "tetrakis-hexahedron-net.json",
+    "deltoidal-icositetrahedron": "deltoidal-icositetrahedron-net.json",
+    "disdyakis-dodecahedron": "disdyakis-dodecahedron-net.json",
+    "rhombic-triacontahedron": "rhombic-triacontahedron-net.json",
+    "triakis-icosahedron": "triakis-icosahedron-net.json",
+    "pentakis-dodecahedron": "pentakis-dodecahedron-net.json",
+    "deltoidal-hexecontahedron": "deltoidal-hexecontahedron-net.json",
+    "disdyakis-triacontahedron": "disdyakis-triacontahedron-net.json",
+    "pentagonal-icositetrahedron-laevo":
+        "pentagonal-icositetrahedron-laevo-net.json",
+    "pentagonal-hexecontahedron-laevo":
+        "pentagonal-hexecontahedron-laevo-net.json",
 };
 
 const RENDER_MODES = ["wireframe", "translucent", "flat", "rendered"];
+/** Short labels for the shading value column (matches preset buttons). */
+const RENDER_MODE_LABELS = ["Wire", "Glass", "Flat", "Render"];
 let currentRenderModeIndex = 2;
 
 // --- Data Tables ---
@@ -405,6 +467,55 @@ const POLYHEDRON_DATA = {
             "4-4": Math.PI / 3,
         },
     },
+    // Catalan solids: nets carry polyKey + foldAngleRad per connection (duals of Archimedean).
+    "triakis-tetrahedron": {
+        name: "Triakis Tetrahedron",
+        faceCounts: { 3: 12 },
+    },
+    "triakis-octahedron": {
+        name: "Triakis Octahedron",
+        faceCounts: { 3: 24 },
+    },
+    "tetrakis-hexahedron": {
+        name: "Tetrakis Hexahedron",
+        faceCounts: { 3: 24 },
+    },
+    "deltoidal-icositetrahedron": {
+        name: "Deltoidal Icositetrahedron",
+        faceCounts: { 4: 24 },
+    },
+    "disdyakis-dodecahedron": {
+        name: "Disdyakis Dodecahedron",
+        faceCounts: { 3: 48 },
+    },
+    "rhombic-triacontahedron": {
+        name: "Rhombic Triacontahedron",
+        faceCounts: { 4: 30 },
+    },
+    "triakis-icosahedron": {
+        name: "Triakis Icosahedron",
+        faceCounts: { 3: 60 },
+    },
+    "pentakis-dodecahedron": {
+        name: "Pentakis Dodecahedron",
+        faceCounts: { 3: 60 },
+    },
+    "deltoidal-hexecontahedron": {
+        name: "Deltoidal Hexecontahedron",
+        faceCounts: { 4: 60 },
+    },
+    "disdyakis-triacontahedron": {
+        name: "Disdyakis Triacontahedron",
+        faceCounts: { 3: 120 },
+    },
+    "pentagonal-icositetrahedron-laevo": {
+        name: "Pentagonal Icositetrahedron (laevo)",
+        faceCounts: { 5: 24 },
+    },
+    "pentagonal-hexecontahedron-laevo": {
+        name: "Pentagonal Hexecontahedron (laevo)",
+        faceCounts: { 5: 60 },
+    },
 };
 
 // Helper function to generate a canonical face count signature string
@@ -416,13 +527,15 @@ function getFaceCountSignature(counts) {
         .join("_");
 }
 
-// Reverse lookup table: Signature -> Vertex Config Key
+// Reverse lookup table: Signature -> Vertex Config Key (first registration wins — ambiguous Catalans need net polyKey).
 const faceCountSigToVertexConfigKey = {};
 for (const key in POLYHEDRON_DATA) {
     const data = POLYHEDRON_DATA[key];
     if (data.faceCounts) {
         const signature = getFaceCountSignature(data.faceCounts);
-        faceCountSigToVertexConfigKey[signature] = key;
+        if (!(signature in faceCountSigToVertexConfigKey)) {
+            faceCountSigToVertexConfigKey[signature] = key;
+        }
     }
 }
 // console.log("Face Count Signatures Map:", faceCountSigToVertexConfigKey);
@@ -432,36 +545,1429 @@ function colorCoordinatedBySidesEnabled() {
     return el ? el.checked : true;
 }
 
-/** Muted natural palette by polygon side count (display only when coordinated mode is on). */
-const POLYGON_SIDE_COLOR_CSS = {
-    3: "#c9a45c",
-    4: "#9b87b8",
-    5: "#6e9183",
-    6: "#b88a72",
-    7: "#7a8eb2",
-    8: "#8f8374",
-    9: "#a89b5c",
-    10: "#9c7688",
-    11: "#5c8585",
-    12: "#c49a6c",
+/** Muted dye-inspired palettes by polygon side count (when Color by sides is on). */
+const DYE_PALETTE_DEFINITIONS = {
+    natural: {
+        3: "#c9a45c",
+        4: "#9b87b8",
+        5: "#6e9183",
+        6: "#b88a72",
+        7: "#7a8eb2",
+        8: "#8f8374",
+        9: "#a89b5c",
+        10: "#9c7688",
+        11: "#5c8585",
+        12: "#c49a6c",
+    },
+    indigo: {
+        3: "#5c6d82",
+        4: "#4a5c72",
+        5: "#3d4f63",
+        6: "#6a7a8f",
+        7: "#445566",
+        8: "#55667a",
+        9: "#3a4a5c",
+        10: "#4f5f73",
+        11: "#354555",
+        12: "#5a6b80",
+    },
+    ochre: {
+        3: "#c9a24a",
+        4: "#b18a3a",
+        5: "#9a7534",
+        6: "#d1a84e",
+        7: "#a88238",
+        8: "#8d6f36",
+        9: "#bc9640",
+        10: "#7f6230",
+        11: "#a88c3a",
+        12: "#c4a042",
+    },
+    funghi: {
+        3: "#a89888",
+        4: "#8b7d72",
+        5: "#9a8b7e",
+        6: "#7a6d62",
+        7: "#b5a695",
+        8: "#6e6558",
+        9: "#8f8378",
+        10: "#a3968a",
+        11: "#5c5448",
+        12: "#94877a",
+    },
+    flora: {
+        3: "#7d9269",
+        4: "#8b7a8a",
+        5: "#6b8f7a",
+        6: "#9a8b72",
+        7: "#5f7a66",
+        8: "#a39080",
+        9: "#6e7d62",
+        10: "#8a9a7a",
+        11: "#7a6b55",
+        12: "#879a82",
+    },
+    kakishibu: {
+        3: "#8b5a3c",
+        4: "#a07050",
+        5: "#6d4a38",
+        6: "#9a6344",
+        7: "#7d4e36",
+        8: "#b07858",
+        9: "#5c3f30",
+        10: "#8f6042",
+        11: "#6a4532",
+        12: "#a06848",
+    },
+    beni: {
+        3: "#b87a7a",
+        4: "#9e6a72",
+        5: "#8a5a66",
+        6: "#c48a8a",
+        7: "#a07078",
+        8: "#7d5058",
+        9: "#b08088",
+        10: "#8f5a62",
+        11: "#6a4048",
+        12: "#a87880",
+    },
+    /**
+     * Fabric / pigment scans — per-face assignment; not a side-count hex map.
+     * Add more fungi the same way (`_swatchPalette: true`, `swatches: [...]`).
+     */
+    neoboletus: {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/neoboletus/linen-alum-acetate.png",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/neoboletus/linen-titanium-oxalate.png",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/neoboletus/linen-iron.png",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/neoboletus/wool-tin.png",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/neoboletus/wool-alum.png",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/neoboletus/wool-iron.png",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/neoboletus/silk-tin.png",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/neoboletus/silk-alum.png",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/neoboletus/silk-iron.png",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/neoboletus/pigment-base.png",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/neoboletus/pigment-alum.png",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/neoboletus/pigment-iron.png",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/neoboletus/pigment-copper.png",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/neoboletus/pigment-citric-acid.png",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/neoboletus/pigment-soda-ash.png",
+            },
+        ],
+    },
+    "boletopsis-grisea": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · aluminum acetate",
+                path: "textures/dye/boletopsis-grisea/linen-alum-acetate.png",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/boletopsis-grisea/linen-titanium-oxalate.png",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/boletopsis-grisea/linen-iron.png",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/boletopsis-grisea/wool-tin.png",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/boletopsis-grisea/wool-alum.png",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/boletopsis-grisea/wool-iron.png",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/boletopsis-grisea/silk-tin.png",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/boletopsis-grisea/silk-alum.png",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/boletopsis-grisea/silk-iron.png",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/boletopsis-grisea/pigment-base.png",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/boletopsis-grisea/pigment-alum.png",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/boletopsis-grisea/pigment-iron.png",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/boletopsis-grisea/pigment-copper.png",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/boletopsis-grisea/pigment-citric-acid.png",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/boletopsis-grisea/pigment-soda-ash.png",
+            },
+        ],
+    },
+    "cortinarius-neosanguineus": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/cortinarius-neosanguineus/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/cortinarius-neosanguineus/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/cortinarius-neosanguineus/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/cortinarius-neosanguineus/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/cortinarius-neosanguineus/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/cortinarius-neosanguineus/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/cortinarius-neosanguineus/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/cortinarius-neosanguineus/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/cortinarius-neosanguineus/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/cortinarius-neosanguineus/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/cortinarius-neosanguineus/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/cortinarius-neosanguineus/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/cortinarius-neosanguineus/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/cortinarius-neosanguineus/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/cortinarius-neosanguineus/pigment-soda-ash.webp",
+            },
+        ],
+    },
+    "hypomyces-lactifluorum": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/hypomyces-lactifluorum/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/hypomyces-lactifluorum/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/hypomyces-lactifluorum/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/hypomyces-lactifluorum/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/hypomyces-lactifluorum/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/hypomyces-lactifluorum/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/hypomyces-lactifluorum/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/hypomyces-lactifluorum/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/hypomyces-lactifluorum/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/hypomyces-lactifluorum/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/hypomyces-lactifluorum/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/hypomyces-lactifluorum/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/hypomyces-lactifluorum/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/hypomyces-lactifluorum/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/hypomyces-lactifluorum/pigment-soda-ash.webp",
+            },
+        ],
+    },
+    "hydnellum-squamosus": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/hydnellum-squamosus/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/hydnellum-squamosus/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/hydnellum-squamosus/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/hydnellum-squamosus/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/hydnellum-squamosus/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/hydnellum-squamosus/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/hydnellum-squamosus/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/hydnellum-squamosus/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/hydnellum-squamosus/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/hydnellum-squamosus/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/hydnellum-squamosus/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/hydnellum-squamosus/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/hydnellum-squamosus/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/hydnellum-squamosus/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/hydnellum-squamosus/pigment-soda-ash.webp",
+            },
+        ],
+    },
+    "gymnopilus-ventricosus": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/gymnopilus-ventricosus/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/gymnopilus-ventricosus/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/gymnopilus-ventricosus/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/gymnopilus-ventricosus/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/gymnopilus-ventricosus/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/gymnopilus-ventricosus/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/gymnopilus-ventricosus/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/gymnopilus-ventricosus/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/gymnopilus-ventricosus/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/gymnopilus-ventricosus/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/gymnopilus-ventricosus/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/gymnopilus-ventricosus/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/gymnopilus-ventricosus/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/gymnopilus-ventricosus/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/gymnopilus-ventricosus/pigment-soda-ash.webp",
+            },
+        ],
+    },
+    "echinodontium-tinctorium": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/echinodontium-tinctorium/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/echinodontium-tinctorium/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/echinodontium-tinctorium/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/echinodontium-tinctorium/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/echinodontium-tinctorium/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/echinodontium-tinctorium/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/echinodontium-tinctorium/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/echinodontium-tinctorium/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/echinodontium-tinctorium/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/echinodontium-tinctorium/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/echinodontium-tinctorium/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/echinodontium-tinctorium/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/echinodontium-tinctorium/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/echinodontium-tinctorium/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/echinodontium-tinctorium/pigment-soda-ash.webp",
+            },
+        ],
+    },
+    "xerocomellus-zelleri": {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/xerocomellus-zelleri/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/xerocomellus-zelleri/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/xerocomellus-zelleri/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/xerocomellus-zelleri/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/xerocomellus-zelleri/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/xerocomellus-zelleri/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/xerocomellus-zelleri/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/xerocomellus-zelleri/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/xerocomellus-zelleri/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/xerocomellus-zelleri/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/xerocomellus-zelleri/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/xerocomellus-zelleri/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/xerocomellus-zelleri/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/xerocomellus-zelleri/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/xerocomellus-zelleri/pigment-soda-ash.webp",
+            },
+        ],
+    },
+    ramaria: {
+        _swatchPalette: true,
+        swatches: [
+            {
+                id: "linen-alum-acetate",
+                label: "Linen · alum acetate",
+                path: "textures/dye/ramaria/linen-alum-acetate.webp",
+            },
+            {
+                id: "linen-titanium-oxalate",
+                label: "Linen · titanium oxalate",
+                path: "textures/dye/ramaria/linen-titanium-oxalate.webp",
+            },
+            {
+                id: "linen-iron",
+                label: "Linen · iron",
+                path: "textures/dye/ramaria/linen-iron.webp",
+            },
+            {
+                id: "wool-tin",
+                label: "Wool · tin",
+                path: "textures/dye/ramaria/wool-tin.webp",
+            },
+            {
+                id: "wool-alum",
+                label: "Wool · alum",
+                path: "textures/dye/ramaria/wool-alum.webp",
+            },
+            {
+                id: "wool-iron",
+                label: "Wool · iron",
+                path: "textures/dye/ramaria/wool-iron.webp",
+            },
+            {
+                id: "silk-tin",
+                label: "Silk · tin",
+                path: "textures/dye/ramaria/silk-tin.webp",
+            },
+            {
+                id: "silk-alum",
+                label: "Silk · alum",
+                path: "textures/dye/ramaria/silk-alum.webp",
+            },
+            {
+                id: "silk-iron",
+                label: "Silk · iron",
+                path: "textures/dye/ramaria/silk-iron.webp",
+            },
+            {
+                id: "pigment-base",
+                label: "Pigment · base",
+                path: "textures/dye/ramaria/pigment-base.webp",
+            },
+            {
+                id: "pigment-alum",
+                label: "Pigment · alum",
+                path: "textures/dye/ramaria/pigment-alum.webp",
+            },
+            {
+                id: "pigment-iron",
+                label: "Pigment · iron",
+                path: "textures/dye/ramaria/pigment-iron.webp",
+            },
+            {
+                id: "pigment-copper",
+                label: "Pigment · copper",
+                path: "textures/dye/ramaria/pigment-copper.webp",
+            },
+            {
+                id: "pigment-citric-acid",
+                label: "Pigment · citric acid",
+                path: "textures/dye/ramaria/pigment-citric-acid.webp",
+            },
+            {
+                id: "pigment-soda-ash",
+                label: "Pigment · soda ash",
+                path: "textures/dye/ramaria/pigment-soda-ash.webp",
+            },
+        ],
+    },
 };
 
+const DYE_PALETTE_STORAGE_KEY = "polyfold_dye_palette_v1";
+let currentDyePaletteId = "natural";
+
+/** Face texture set: "none" or procedural sample sets (shared textures, per side count 3–12). */
+const FACE_TEXTURE_SET_STORAGE_KEY = "polyfold_face_texture_set_v1";
+const FACE_TEXTURE_SET_IDS = ["none", "washiSamples", "clothAtlas"];
+let currentFaceTextureSetId = "none";
+
+/** High-level Appearance look: Solid (no face texture map), Texture (washi/cloth), or Dye (palette-first; texture none). */
+const APPEARANCE_MODE_IDS = ["solid", "texture", "dye"];
+const APPEARANCE_MODE_STORAGE_KEY = "polyfold_appearance_mode_v1";
+let currentAppearanceMode = "solid";
+/** @type {Map<string, THREE.Texture>} */
+const proceduralDyeTextureCache = new Map();
+
+/**
+ * Add `{ id, label, kind: "file", path }` for each PNG under textures/cloth/
+ * or `{ kind: "procedural", variant }` for built‑in washes.
+ */
+const CLOTH_ATLAS_REGISTRY = [
+    {
+        id: "shibori-yellow",
+        label: "Shibori (yellow)",
+        kind: "file",
+        path: "textures/cloth/shibori-yellow.png",
+    },
+    {
+        id: "shibori-indigo-diamond",
+        label: "Shibori (indigo diamond)",
+        kind: "file",
+        path: "textures/cloth/shibori-indigo-diamond.png",
+    },
+    {
+        id: "wash-indigo",
+        label: "Procedural indigo wash",
+        kind: "procedural",
+        variant: "indigo",
+    },
+];
+
+const CLOTH_ATLAS_PATTERN_IDS = ["uniform", "alternateTwo", "alternateTint"];
+const CLOTH_ATLAS_ID_A_STORAGE_KEY = "polyfold_cloth_atlas_id_a_v1";
+const CLOTH_ATLAS_ID_B_STORAGE_KEY = "polyfold_cloth_atlas_id_b_v1";
+const CLOTH_ATLAS_PATTERN_STORAGE_KEY = "polyfold_cloth_atlas_pattern_v1";
+const CLOTH_ATLAS_TINT_A_STORAGE_KEY = "polyfold_cloth_atlas_tint_a_v1";
+const CLOTH_ATLAS_TINT_B_STORAGE_KEY = "polyfold_cloth_atlas_tint_b_v1";
+
+let currentClothAtlasIdA = "shibori-yellow";
+let currentClothAtlasIdB = "wash-indigo";
+let currentClothAtlasPattern = "uniform";
+let currentClothAtlasTintHexA = "#ffffff";
+let currentClothAtlasTintHexB = "#e8dff2";
+
+/** Outstanding file loads for cloth atlas (when 0, one refresh). */
+let clothAtlasPendingFileLoads = 0;
+
+function getClothRegistryEntry(id) {
+    return (
+        CLOTH_ATLAS_REGISTRY.find((e) => e.id === id) ??
+        CLOTH_ATLAS_REGISTRY[0]
+    );
+}
+
+function normalizeClothRegistryId(id, fallbackId) {
+    return CLOTH_ATLAS_REGISTRY.some((e) => e.id === id) ? id : fallbackId;
+}
+
+function clothTextureCacheKey(entryId) {
+    return `cloth:${entryId}`;
+}
+
+function clothEntryIdForFace(faceId) {
+    if (currentFaceTextureSetId !== "clothAtlas") return currentClothAtlasIdA;
+    if (currentClothAtlasPattern === "alternateTwo") {
+        const fid = Number(faceId) || 1;
+        return fid % 2 === 1 ? currentClothAtlasIdA : currentClothAtlasIdB;
+    }
+    return currentClothAtlasIdA;
+}
+
+function clothEntryIdsNeededForCurrentPattern() {
+    if (currentFaceTextureSetId !== "clothAtlas") return [];
+    if (currentClothAtlasPattern === "alternateTwo")
+        return [currentClothAtlasIdA, currentClothAtlasIdB];
+    return [currentClothAtlasIdA];
+}
+
+/** Per-face #hex overrides; keyed by {@link stableNetIdForOverrides}; survives reload for library presets (polyKey). */
+const FACE_HEX_OVERRIDE_STORAGE_KEY = "polyfold_face_hex_overrides_v1";
+/** @type {Map<number, string>} */
+let faceHexOverrideByFaceId = new Map();
+/** Net id last synced into {@link faceHexOverrideByFaceId} from storage. */
+let faceHexOverrideSessionNetId = null;
+let faceHexContextMenuTargetFaceId = null;
+
+const FACE_SWATCH_ASSIGN_STORAGE_KEY = "polyfold_face_swatch_assign_v1";
+/** @type {Map<number, string>} swatch id per face */
+let faceSwatchByFaceId = new Map();
+let faceSwatchSessionNetId = null;
+
+const SWATCH_APPLY_MODE_STORAGE_KEY = "polyfold_swatch_apply_mode_v1";
+const SWATCH_UNIFORM_PICK_ID_STORAGE_KEY = "polyfold_swatch_uniform_pick_id_v1";
+/** Fixed crop for all fungi scan palettes: fraction trimmed from each side of PNGs (white margins / fray). */
+const SWATCH_SCAN_EDGE_MARGIN = 0.15;
+const SWATCH_APPLY_MODE_IDS = ["uniformPick", "uniformRandom", "perFaceRandom"];
+let currentSwatchApplyMode = "perFaceRandom";
+let currentSwatchUniformPickId = "linen-alum-acetate";
+/** Set when {@link currentSwatchApplyMode} is {@code uniformRandom}; used if a face has no map entry. */
+let activeUniformRandomSwatchId = null;
+
+let swatchPendingTextureLoads = 0;
+
+function isSwatchDyePaletteSelected() {
+    return (
+        colorCoordinatedBySidesEnabled() &&
+        DYE_PALETTE_DEFINITIONS[currentDyePaletteId]?._swatchPalette === true
+    );
+}
+
+/** @returns {{ paletteId: string, swatches: {id:string,label:string,path:string}[] } | null} */
+function getActiveSwatchPaletteDef() {
+    if (!isSwatchDyePaletteSelected()) return null;
+    const def = DYE_PALETTE_DEFINITIONS[currentDyePaletteId];
+    if (!def?._swatchPalette || !Array.isArray(def.swatches)) return null;
+    return { paletteId: currentDyePaletteId, swatches: def.swatches };
+}
+
+function getActivePolygonSideColorMap() {
+    const def =
+        DYE_PALETTE_DEFINITIONS[currentDyePaletteId] ||
+        DYE_PALETTE_DEFINITIONS.natural;
+    if (def?._swatchPalette)
+        return DYE_PALETTE_DEFINITIONS.natural;
+    return def;
+}
+
 function colorCssForPolygonSides(n) {
+    if (isSwatchDyePaletteSelected()) return "#ffffff";
+    const map = getActivePolygonSideColorMap();
     if (!Number.isFinite(n) || n < 3) return "#9a9aa8";
-    if (POLYGON_SIDE_COLOR_CSS[n]) return POLYGON_SIDE_COLOR_CSS[n];
+    if (map[n]) return map[n];
     const clamped = Math.min(Math.max(Math.round(n), 3), 12);
-    return POLYGON_SIDE_COLOR_CSS[clamped] ?? "#9a9aa8";
+    return map[clamped] ?? "#9a9aa8";
 }
 
 function resolveDisplayColorHex(colorFromNet, sideCount) {
     if (colorCoordinatedBySidesEnabled() && sideCount >= 3) {
+        if (isSwatchDyePaletteSelected()) return 0xffffff;
         return parseColor(colorCssForPolygonSides(sideCount));
     }
     return parseColor(colorFromNet);
 }
 
+function djb2HexId(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+        h = Math.imul(h, 33) ^ str.charCodeAt(i);
+    }
+    return (h >>> 0).toString(16);
+}
+
+/** Stable bucket id for persisting face hex overrides (polyKey when known, else topology hash). */
+function stableNetIdForOverrides(netData) {
+    if (!netData) return "none";
+    const pk =
+        typeof netData.polyKey === "string" ? netData.polyKey.trim() : "";
+    if (pk && POLYHEDRON_DATA[pk]) return `pk:${pk}`;
+    const baseNo = getFaceVertexCountFromSpec(netData.baseFace) ?? 0;
+    const parts = (netData.connections || [])
+        .map((c) => {
+            const from = Number(c.from);
+            const to = Number(c.to);
+            const fe = (c.fromEdge || []).join(",");
+            const te = (c.toEdge || []).join(",");
+            return `${from}>${to}@${fe}^${te}`;
+        })
+        .sort();
+    const canon = `b${baseNo}|${parts.join(";")}`;
+    return `t:${djb2HexId(canon)}`;
+}
+
+function loadAllFaceHexOverrideBuckets() {
+    try {
+        const raw = localStorage.getItem(FACE_HEX_OVERRIDE_STORAGE_KEY);
+        if (!raw) return {};
+        const o = JSON.parse(raw);
+        return typeof o === "object" && o && !Array.isArray(o) ? o : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function loadFaceHexOverridesMapForNetId(netId) {
+    const m = new Map();
+    if (!netId || netId === "none") return m;
+    const bucket = loadAllFaceHexOverrideBuckets()[netId];
+    if (!bucket || typeof bucket !== "object") return m;
+    for (const [k, v] of Object.entries(bucket)) {
+        const fid = Number(k);
+        if (Number.isFinite(fid) && typeof v === "string" && v.length > 0)
+            m.set(fid, v);
+    }
+    return m;
+}
+
+function clearAllFaceHexOverridesAndRefresh() {
+    if (faceHexOverrideByFaceId.size === 0) return;
+    faceHexOverrideByFaceId.clear();
+    saveFaceHexOverridesToStorage();
+    refreshAllFaceDisplayColors();
+    syncAppearanceCustomRowUi();
+}
+
+function saveFaceHexOverridesToStorage() {
+    if (!faceHexOverrideSessionNetId || faceHexOverrideSessionNetId === "none")
+        return;
+    const all = loadAllFaceHexOverrideBuckets();
+    if (faceHexOverrideByFaceId.size === 0) {
+        delete all[faceHexOverrideSessionNetId];
+    } else {
+        const out = {};
+        faceHexOverrideByFaceId.forEach((v, k) => {
+            out[String(k)] = v;
+        });
+        all[faceHexOverrideSessionNetId] = out;
+    }
+    try {
+        localStorage.setItem(
+            FACE_HEX_OVERRIDE_STORAGE_KEY,
+            JSON.stringify(all),
+        );
+    } catch (e) {
+        /* quota */
+    }
+}
+
+function syncFaceHexOverridesFromNetData(netData) {
+    const id = stableNetIdForOverrides(netData);
+    if (id !== faceHexOverrideSessionNetId) {
+        faceHexOverrideSessionNetId = id;
+        faceHexOverrideByFaceId = loadFaceHexOverridesMapForNetId(id);
+        syncAppearanceCustomRowUi();
+    }
+}
+
+function loadAllFaceSwatchAssignBuckets() {
+    try {
+        const raw = localStorage.getItem(FACE_SWATCH_ASSIGN_STORAGE_KEY);
+        if (!raw) return {};
+        const o = JSON.parse(raw);
+        return typeof o === "object" && o && !Array.isArray(o) ? o : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function loadFaceSwatchAssignMapForNetId(netId) {
+    const m = new Map();
+    if (!netId || netId === "none") return m;
+    const bucket = loadAllFaceSwatchAssignBuckets()[netId];
+    if (!bucket || typeof bucket !== "object") return m;
+    for (const [k, v] of Object.entries(bucket)) {
+        const fid = Number(k);
+        if (Number.isFinite(fid) && typeof v === "string" && v.length > 0)
+            m.set(fid, v);
+    }
+    return m;
+}
+
+function saveFaceSwatchAssignToStorage() {
+    if (!faceSwatchSessionNetId || faceSwatchSessionNetId === "none") return;
+    const all = loadAllFaceSwatchAssignBuckets();
+    if (faceSwatchByFaceId.size === 0) {
+        delete all[faceSwatchSessionNetId];
+    } else {
+        const out = {};
+        faceSwatchByFaceId.forEach((v, k) => {
+            out[String(k)] = v;
+        });
+        all[faceSwatchSessionNetId] = out;
+    }
+    try {
+        localStorage.setItem(
+            FACE_SWATCH_ASSIGN_STORAGE_KEY,
+            JSON.stringify(all),
+        );
+    } catch (e) {
+        /* quota */
+    }
+}
+
+function syncFaceSwatchAssignFromNetData(netData) {
+    const id = stableNetIdForOverrides(netData);
+    if (id !== faceSwatchSessionNetId) {
+        faceSwatchSessionNetId = id;
+        faceSwatchByFaceId = loadFaceSwatchAssignMapForNetId(id);
+    }
+    rehydrateActiveUniformRandomSwatchId();
+}
+
+/** After load from storage, restore the single swatch used for uniform-random mode. */
+function rehydrateActiveUniformRandomSwatchId() {
+    if (currentSwatchApplyMode !== "uniformRandom") return;
+    if (activeUniformRandomSwatchId) return;
+    const pal = getActiveSwatchPaletteDef();
+    if (!pal?.swatches?.length) return;
+    const first = faceSwatchByFaceId.values().next().value;
+    if (first) {
+        const n = normalizeSwatchIdForPalette(first, pal);
+        if (n) activeUniformRandomSwatchId = n;
+    }
+}
+
+function listNetFaceIds() {
+    return Object.keys(allVertices)
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
+}
+
+function normalizeSwatchIdForPalette(swatchId, pal) {
+    if (!pal?.swatches?.length) return null;
+    if (pal.swatches.some((s) => s.id === swatchId)) return swatchId;
+    return pal.swatches[0].id;
+}
+
+function runSwatchDistributionFromCurrentMode() {
+    const pal = getActiveSwatchPaletteDef();
+    if (!pal || pal.swatches.length === 0) return;
+    const fids = listNetFaceIds();
+    if (fids.length === 0) return;
+    faceSwatchByFaceId.clear();
+    activeUniformRandomSwatchId = null;
+    if (currentSwatchApplyMode === "uniformPick") {
+        const sid = normalizeSwatchIdForPalette(
+            currentSwatchUniformPickId,
+            pal,
+        );
+        for (const fid of fids) faceSwatchByFaceId.set(fid, sid);
+    } else if (currentSwatchApplyMode === "uniformRandom") {
+        const pick =
+            pal.swatches[Math.floor(Math.random() * pal.swatches.length)];
+        activeUniformRandomSwatchId = pick.id;
+        for (const fid of fids) faceSwatchByFaceId.set(fid, pick.id);
+    } else {
+        for (const fid of fids) {
+            const pick =
+                pal.swatches[Math.floor(Math.random() * pal.swatches.length)];
+            faceSwatchByFaceId.set(fid, pick.id);
+        }
+    }
+    saveFaceSwatchAssignToStorage();
+}
+
+/** After palette switch or load: drop assignments that do not exist in the active swatch palette. */
+function sanitizeFaceSwatchMapForActivePalette() {
+    const pal = getActiveSwatchPaletteDef();
+    if (!pal?.swatches?.length) return;
+    const valid = new Set(pal.swatches.map((s) => s.id));
+    let bad = false;
+    faceSwatchByFaceId.forEach((sid) => {
+        if (!valid.has(sid)) bad = true;
+    });
+    if (!bad) return;
+    const fids = listNetFaceIds();
+    if (fids.length > 0) runSwatchDistributionFromCurrentMode();
+    else {
+        for (const [fid, sid] of [...faceSwatchByFaceId.entries()]) {
+            if (!valid.has(sid)) faceSwatchByFaceId.delete(fid);
+        }
+        saveFaceSwatchAssignToStorage();
+    }
+}
+
+function fallbackSwatchIdForFace(faceId) {
+    const pal = getActiveSwatchPaletteDef();
+    if (!pal?.swatches?.length) return null;
+    if (currentSwatchApplyMode === "uniformPick") {
+        return normalizeSwatchIdForPalette(currentSwatchUniformPickId, pal);
+    }
+    if (currentSwatchApplyMode === "uniformRandom") {
+        const u = normalizeSwatchIdForPalette(
+            activeUniformRandomSwatchId,
+            pal,
+        );
+        if (u) return u;
+    }
+    const netKey = faceSwatchSessionNetId || "default";
+    const h = djb2HexId(`${netKey}:${faceId}`);
+    const idx = parseInt(h.slice(0, 8), 16) % pal.swatches.length;
+    return pal.swatches[idx].id;
+}
+
+function maybeInitializeSwatchAssignmentsForNet() {
+    if (!isSwatchDyePaletteSelected() || !f1Mesh) return;
+    if (faceSwatchByFaceId.size > 0) return;
+    runSwatchDistributionFromCurrentMode();
+}
+
+/**
+ * Map face UV 0–1 onto the inner [m, 1−m] of the scan so white borders and fray
+ * stay off the polygon (ClampToEdge avoids bleed).
+ */
+function applySwatchScanUvCrop(tex) {
+    if (!tex) return;
+    const m = Math.min(0.35, Math.max(0, SWATCH_SCAN_EDGE_MARGIN));
+    const span = 1 - 2 * m;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    if (span <= 0.02) {
+        tex.repeat.set(1, 1);
+        tex.offset.set(0, 0);
+    } else {
+        tex.repeat.set(span, span);
+        tex.offset.set(m, m);
+    }
+    tex.needsUpdate = true;
+}
+
+function clearAllSwatchTextureCache() {
+    const keys = [];
+    proceduralDyeTextureCache.forEach((_tex, key) => {
+        if (String(key).startsWith("swatch:")) keys.push(key);
+    });
+    for (const key of keys) {
+        const tex = proceduralDyeTextureCache.get(key);
+        proceduralDyeTextureCache.delete(key);
+        try {
+            tex?.dispose();
+        } catch (e) {
+            /* ignore */
+        }
+    }
+    swatchPendingTextureLoads = 0;
+}
+
+function swatchTextureCacheKey(paletteId, swatchId) {
+    return `swatch:${paletteId}:${swatchId}`;
+}
+
+function swatchFinishPendingTextureLoad() {
+    swatchPendingTextureLoads = Math.max(0, swatchPendingTextureLoads - 1);
+    if (swatchPendingTextureLoads <= 0 && f1Mesh) refreshAllFaceDisplayColors();
+}
+
+function ensureSwatchFileLoaded(paletteId, entry) {
+    if (!entry?.path) return;
+    const key = swatchTextureCacheKey(paletteId, entry.id);
+    if (proceduralDyeTextureCache.has(key)) return;
+    swatchPendingTextureLoads++;
+    const loader = new THREE.TextureLoader();
+    loader.load(
+        entry.path,
+        (tex) => {
+            if (
+                currentDyePaletteId !== paletteId ||
+                !DYE_PALETTE_DEFINITIONS[paletteId]?._swatchPalette
+            ) {
+                tex.dispose();
+                swatchFinishPendingTextureLoad();
+                return;
+            }
+            if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+            tex.userData.sharedDyeTexture = true;
+            tex.userData.swatchDyeTexture = true;
+            applySwatchScanUvCrop(tex);
+            if (renderer) {
+                const maxA = renderer.capabilities.getMaxAnisotropy();
+                tex.anisotropy = Math.min(8, maxA);
+            }
+            tex.needsUpdate = true;
+            proceduralDyeTextureCache.set(key, tex);
+            swatchFinishPendingTextureLoad();
+        },
+        undefined,
+        () => {
+            console.warn(
+                `[01-FOLD] Swatch failed to load: ${entry.path}`,
+            );
+            swatchFinishPendingTextureLoad();
+        },
+    );
+}
+
+function getSwatchIdForFace(faceId) {
+    const pal = getActiveSwatchPaletteDef();
+    if (faceSwatchByFaceId.has(faceId)) {
+        const sid = faceSwatchByFaceId.get(faceId);
+        if (pal) {
+            const n = normalizeSwatchIdForPalette(sid, pal);
+            if (n && n !== sid) faceSwatchByFaceId.set(faceId, n);
+            return n;
+        }
+        return sid;
+    }
+    return fallbackSwatchIdForFace(faceId) ?? pal?.swatches[0]?.id ?? null;
+}
+
+function getSwatchDyeDiffuseMap(faceId) {
+    const pal = getActiveSwatchPaletteDef();
+    if (!pal) return null;
+    const sid = getSwatchIdForFace(faceId);
+    const entry =
+        pal.swatches.find((s) => s.id === sid) ?? pal.swatches[0];
+    if (!entry) return null;
+    const key = swatchTextureCacheKey(pal.paletteId, entry.id);
+    const tex = proceduralDyeTextureCache.get(key);
+    if (tex) return tex;
+    ensureSwatchFileLoaded(pal.paletteId, entry);
+    return null;
+}
+
+/**
+ * Final diffuse color for a face (override wins; else net JSON + palette rules).
+ * @param {number} faceId
+ * @param {number} sideCount
+ * @param {object} [netDataForCreate] pass during {@link createNetFromData} before lastLoadedNetData updates
+ */
+function resolveFaceDisplayColorHex(faceId, sideCount, netDataForCreate) {
+    if (faceHexOverrideByFaceId.has(faceId)) {
+        return parseColor(faceHexOverrideByFaceId.get(faceId));
+    }
+    if (isSwatchDyePaletteSelected()) return 0xffffff;
+    const colorInput = getColorInputForFaceId(faceId, netDataForCreate);
+    return resolveDisplayColorHex(colorInput, sideCount);
+}
+
+/** True when every connection defines foldAngleRad (Catalan / irregular nets with per-hinge angles). */
+function netHasPerConnectionFoldAngles(netData) {
+    const conns = netData?.connections;
+    if (!Array.isArray(conns) || conns.length === 0) return false;
+    return conns.every(
+        (c) =>
+            typeof c.foldAngleRad === "number" &&
+            Number.isFinite(c.foldAngleRad),
+    );
+}
+
+function isFoldDirectionChallengeActive() {
+    const el = document.getElementById("foldDirectionChallengeToggle");
+    return Boolean(el?.checked);
+}
+
+function isFoldDirectionChallengeEligible() {
+    return Boolean(
+        lastLoadedNetData &&
+            !isNetBuilderActive &&
+            netHasPerConnectionFoldAngles(lastLoadedNetData),
+    );
+}
+
+function findFoldConnectionForFaceId(netData, faceId) {
+    const conns = netData?.connections;
+    if (!Array.isArray(conns)) return null;
+    return conns.find((c) => Number(c?.from) === faceId) ?? null;
+}
+
+function flipConnectionFoldAngleForFace(faceId) {
+    if (!lastLoadedNetData?.connections) return;
+    const conn = findFoldConnectionForFaceId(lastLoadedNetData, faceId);
+    if (
+        !conn ||
+        typeof conn.foldAngleRad !== "number" ||
+        !Number.isFinite(conn.foldAngleRad)
+    )
+        return;
+    conn.foldAngleRad = -conn.foldAngleRad;
+    if ("foldSign" in conn) delete conn.foldSign;
+    applyFoldPlayhead(foldPlayhead, { fromUserScrub: false });
+    showSaveNetFeedback(
+        `Reversed hinge for face F${faceId}. Export Data to save JSON.`,
+    );
+}
+
+function updateFoldDirectionChallengeHintVisibility() {
+    const hint = document.getElementById("foldDirectionChallengeHint");
+    const cb = document.getElementById("foldDirectionChallengeToggle");
+    if (!hint || !cb) return;
+    hint.hidden = !isFoldDirectionChallengeEligible() || !cb.checked;
+}
+
+function syncFoldChallengeUi() {
+    const cb = document.getElementById("foldDirectionChallengeToggle");
+    const row = document.getElementById("foldDirectionChallengeRow");
+    if (!cb) return;
+    const eligible = isFoldDirectionChallengeEligible();
+    cb.disabled = !eligible;
+    if (row) {
+        row.title = eligible
+            ? "Right-click a flap face while this is on to reverse that hinge’s fold direction."
+            : "Requires a loaded net with foldAngleRad on every connection (not while building a net).";
+    }
+    if (!eligible && cb.checked) {
+        cb.checked = false;
+        cb.setAttribute("aria-checked", "false");
+    }
+    updateFoldDirectionChallengeHintVisibility();
+}
+
+/** Library fold table and/or per-connection hinge angles from loaded JSON. */
+function hasLibraryFoldSupport() {
+    return Boolean(
+        currentFoldAngles ||
+            netHasPerConnectionFoldAngles(lastLoadedNetData),
+    );
+}
+
 function getVertexConfigKeyForNetData(netData) {
     try {
+        const pk = netData?.polyKey;
+        if (typeof pk === "string" && POLYHEDRON_DATA[pk]) return pk;
         const faceCounts = {};
         const baseCount = getFaceVertexCountFromSpec(netData.baseFace);
         if (baseCount == null) return null;
@@ -946,15 +2452,172 @@ function getExportableFaceMeshes() {
     return meshes;
 }
 
+/** Stellation diagram panels and uniform-cap pyramids for OBJ (world-space triangles). */
+function getStellationMeshesForOBJExport() {
+    const out = [];
+    let diagramPart = 0;
+    if (stellationDiagramSelectionGroup) {
+        stellationDiagramSelectionGroup.updateMatrixWorld(true);
+        stellationDiagramSelectionGroup.traverse((o) => {
+            if (o.isMesh && o.geometry?.attributes?.position) {
+                out.push({
+                    mesh: o,
+                    groupKey: `stell_diagram_${diagramPart++}`,
+                });
+            }
+        });
+    }
+    let capPart = 0;
+    if (stellationCapsGroup) {
+        stellationCapsGroup.updateMatrixWorld(true);
+        stellationCapsGroup.traverse((o) => {
+            if (o.isMesh && o.geometry?.attributes?.position) {
+                const fid = o.userData?.faceId;
+                out.push({
+                    mesh: o,
+                    groupKey:
+                        fid != null && Number.isFinite(fid)
+                            ? `stell_cap_face_${fid}`
+                            : `stell_cap_${capPart++}`,
+                });
+            }
+        });
+    }
+    return out;
+}
+
 /** Quantized position key for welding; matches precision used in getMeshWorldVertices. */
 function weldPositionKey(v) {
     return `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
 }
 
+/**
+ * World-space triangles for mesh export (STL). Same inclusion rules as buildOBJString;
+ * each facet is independent (no vertex welding).
+ */
+function collectExportWorldTriangles() {
+    scene.updateMatrixWorld(true);
+    const stellationExportList = getStellationMeshesForOBJExport();
+    const translucentStellationsOn =
+        !document.getElementById("opaqueStellationsCheckbox")?.checked;
+
+    let entries = getExportableFaceMeshes();
+    const shellOnlyNoInterior =
+        !translucentStellationsOn && stellationExportList.length > 0;
+    if (shellOnlyNoInterior) {
+        entries = [];
+    }
+
+    if (entries.length === 0 && stellationExportList.length === 0) return [];
+
+    const tris = [];
+    const v0 = new THREE.Vector3();
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+
+    function pushMeshTriangles(mesh) {
+        mesh.updateMatrixWorld(true);
+        const pos = mesh.geometry.attributes.position;
+        const count = pos.count;
+        for (let i = 0; i < count; i += 3) {
+            v0.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+            v1.fromBufferAttribute(pos, i + 1).applyMatrix4(mesh.matrixWorld);
+            v2.fromBufferAttribute(pos, i + 2).applyMatrix4(mesh.matrixWorld);
+            tris.push({
+                x0: v0.x,
+                y0: v0.y,
+                z0: v0.z,
+                x1: v1.x,
+                y1: v1.y,
+                z1: v1.z,
+                x2: v2.x,
+                y2: v2.y,
+                z2: v2.z,
+            });
+        }
+    }
+
+    for (const { mesh } of entries) pushMeshTriangles(mesh);
+    for (const { mesh } of stellationExportList) pushMeshTriangles(mesh);
+
+    return tris;
+}
+
+/** Binary STL (little-endian): 80-byte header, uint32 triangle count, 50 bytes per triangle. */
+function buildBinarySTLArrayBuffer() {
+    const tris = collectExportWorldTriangles();
+    if (tris.length === 0) return null;
+
+    const headerSize = 80;
+    const countSize = 4;
+    const recordSize = 50; // 12 floats normal + 9 floats verts + uint16 attribute
+    const buf = new ArrayBuffer(headerSize + countSize + tris.length * recordSize);
+    const dv = new DataView(buf);
+    const header = "Folding Polyhedron Net - STL export".padEnd(80, " ");
+    for (let i = 0; i < 80; i++) {
+        dv.setUint8(i, header.charCodeAt(i) & 255);
+    }
+    dv.setUint32(80, tris.length, true);
+
+    const e1 = new THREE.Vector3();
+    const e2 = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    let off = 84;
+
+    for (let t = 0; t < tris.length; t++) {
+        const tri = tris[t];
+        e1.set(tri.x1 - tri.x0, tri.y1 - tri.y0, tri.z1 - tri.z0);
+        e2.set(tri.x2 - tri.x0, tri.y2 - tri.y0, tri.z2 - tri.z0);
+        n.crossVectors(e1, e2);
+        const len = n.length();
+        if (len > 1e-30) n.multiplyScalar(1 / len);
+        else n.set(0, 0, 0);
+
+        dv.setFloat32(off, n.x, true);
+        off += 4;
+        dv.setFloat32(off, n.y, true);
+        off += 4;
+        dv.setFloat32(off, n.z, true);
+        off += 4;
+        dv.setFloat32(off, tri.x0, true);
+        off += 4;
+        dv.setFloat32(off, tri.y0, true);
+        off += 4;
+        dv.setFloat32(off, tri.z0, true);
+        off += 4;
+        dv.setFloat32(off, tri.x1, true);
+        off += 4;
+        dv.setFloat32(off, tri.y1, true);
+        off += 4;
+        dv.setFloat32(off, tri.z1, true);
+        off += 4;
+        dv.setFloat32(off, tri.x2, true);
+        off += 4;
+        dv.setFloat32(off, tri.y2, true);
+        off += 4;
+        dv.setFloat32(off, tri.z2, true);
+        off += 4;
+        dv.setUint16(off, 0, true);
+        off += 2;
+    }
+
+    return buf;
+}
+
 function buildOBJString() {
     scene.updateMatrixWorld(true);
-    const entries = getExportableFaceMeshes();
-    if (entries.length === 0) return "";
+    const stellationExportList = getStellationMeshesForOBJExport();
+    const translucentStellationsOn =
+        !document.getElementById("opaqueStellationsCheckbox")?.checked;
+
+    let entries = getExportableFaceMeshes();
+    const shellOnlyNoInterior =
+        !translucentStellationsOn && stellationExportList.length > 0;
+    if (shellOnlyNoInterior) {
+        entries = [];
+    }
+
+    if (entries.length === 0 && stellationExportList.length === 0) return "";
 
     const weldedPositions = [];
     const keyToWeldedIndex = new Map();
@@ -978,6 +2641,7 @@ function buildOBJString() {
     }
 
     for (const { index, mesh } of entries) {
+        mesh.updateMatrixWorld(true);
         const pos = mesh.geometry.attributes.position;
         const count = pos.count;
         for (let i = 0; i < count; i += 3) {
@@ -987,7 +2651,21 @@ function buildOBJString() {
             const ib = weldVertex();
             tempVec.fromBufferAttribute(pos, i + 2).applyMatrix4(mesh.matrixWorld);
             const ic = weldVertex();
-            faceTriangles.push({ faceIndex: index, a: ia, b: ib, c: ic });
+            faceTriangles.push({ groupKey: `face_${index}`, a: ia, b: ib, c: ic });
+        }
+    }
+
+    for (const { mesh, groupKey } of stellationExportList) {
+        const pos = mesh.geometry.attributes.position;
+        const count = pos.count;
+        for (let i = 0; i < count; i += 3) {
+            tempVec.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+            const ia = weldVertex();
+            tempVec.fromBufferAttribute(pos, i + 1).applyMatrix4(mesh.matrixWorld);
+            const ib = weldVertex();
+            tempVec.fromBufferAttribute(pos, i + 2).applyMatrix4(mesh.matrixWorld);
+            const ic = weldVertex();
+            faceTriangles.push({ groupKey, a: ia, b: ib, c: ic });
         }
     }
 
@@ -995,6 +2673,18 @@ function buildOBJString() {
     const safeObjName = sanitizeForFilename(currentNetName);
     lines.push("# Wavefront OBJ exported from Folding Polyhedron Net");
     lines.push("# Vertices welded by 5-decimal quantization (see weldPositionKey).");
+    if (shellOnlyNoInterior) {
+        lines.push(
+            "# Translucent stellations OFF: inner polyhedron (face_*) omitted; only stellation geometry (stell_*).",
+        );
+        lines.push(
+            "# Intended as an outer shell without nested interior faces; true watertight solids may need repair in a mesh tool.",
+        );
+    } else {
+        lines.push(
+            "# Translucent stellations ON (or no stellation): includes folded net (face_*) and any stellation (stell_*).",
+        );
+    }
     lines.push(`o ${safeObjName}`);
 
     for (let i = 0; i < weldedPositions.length; i++) {
@@ -1004,11 +2694,11 @@ function buildOBJString() {
         );
     }
 
-    let lastFaceGroup = null;
+    let lastGroupKey = null;
     for (const tri of faceTriangles) {
-        if (tri.faceIndex !== lastFaceGroup) {
-            lines.push(`g face_${tri.faceIndex}`);
-            lastFaceGroup = tri.faceIndex;
+        if (tri.groupKey !== lastGroupKey) {
+            lines.push(`g ${tri.groupKey}`);
+            lastGroupKey = tri.groupKey;
         }
         lines.push(
             `f ${tri.a + 1} ${tri.b + 1} ${tri.c + 1}`,
@@ -1039,6 +2729,497 @@ function exportOBJ() {
     URL.revokeObjectURL(url);
 }
 
+function exportSTL() {
+    if (!f1Mesh) {
+        alert("Load a net first.");
+        return;
+    }
+    const buf = buildBinarySTLArrayBuffer();
+    if (!buf) {
+        alert("Nothing to export.");
+        return;
+    }
+    const blob = new Blob([buf], { type: "model/stl" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${sanitizeForFilename(currentNetName)}.stl`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+const WEBM_MUXER_MODULE_URL = new URL("./js/webm-muxer.mjs", import.meta.url).href;
+const WEBM_EXPORT_TARGET_FPS = 30;
+const WEBM_FLUSH_TIMEOUT_MS = 45000;
+
+function loadWebMMuxerOnce() {
+    if (!webmMuxerImportPromise) {
+        webmMuxerImportPromise = import(/* webpackIgnore: true */ WEBM_MUXER_MODULE_URL).catch(
+            (err) => {
+                webmMuxerImportPromise = null;
+                throw err;
+            },
+        );
+    }
+    return webmMuxerImportPromise;
+}
+
+function stepWebMCodecExport(now) {
+    const ex = webmCodecSession;
+    if (!ex || ex.pendingStop) return;
+    const elapsed = now - ex.t0;
+    if (ex.hasFold) {
+        const total = ex.holdStartMs + ex.foldDurationMs + ex.holdEndMs;
+        if (elapsed >= total) {
+            ex.pendingStop = true;
+            return;
+        }
+        if (elapsed < ex.holdStartMs) {
+            applyFoldPlayhead(0, { skipUi: true });
+        } else if (elapsed < ex.holdStartMs + ex.foldDurationMs) {
+            const u = (elapsed - ex.holdStartMs) / ex.foldDurationMs;
+            applyFoldPlayhead(
+                Math.min(1, Math.max(0, u)) * NUM_ANIMATION_STAGES,
+                { skipUi: true },
+            );
+        } else {
+            applyFoldPlayhead(NUM_ANIMATION_STAGES, { skipUi: true });
+        }
+    } else if (elapsed >= ex.staticDurationMs) {
+        ex.pendingStop = true;
+    }
+}
+
+function encodeWebMCodecFrame() {
+    const s = webmCodecSession;
+    if (!s?.encoder || s._cleaned || s._finalizing) return;
+    const canvas = renderer.domElement;
+    let w = canvas.width & ~1;
+    let h = canvas.height & ~1;
+    if (w < 2 || h < 2) {
+        w = Math.max(2, canvas.width | 0);
+        h = Math.max(2, canvas.height | 0);
+    }
+    const ts = Math.round((s.frameIndex * 1e6) / WEBM_EXPORT_TARGET_FPS);
+    let vf;
+    try {
+        vf = new VideoFrame(canvas, {
+            timestamp: ts,
+            displayWidth: w,
+            displayHeight: h,
+        });
+    } catch (e) {
+        console.error("VideoFrame:", e);
+        s.encodeFailStreak = (s.encodeFailStreak || 0) + 1;
+        if (s.encodeFailStreak >= 45) {
+            abortWebMCodecExport(
+                s,
+                "Could not capture frames from the 3D view (VideoFrame failed repeatedly). Try Chrome/Edge, ensure hardware acceleration is on, or reload the page.",
+            );
+        }
+        return;
+    }
+    const keyFrame = s.frameIndex === 0 || s.frameIndex % 45 === 0;
+    try {
+        s.encoder.encode(vf, { keyFrame });
+    } catch (e2) {
+        console.error("VideoEncoder.encode:", e2);
+        vf.close();
+        s.encodeFailStreak = (s.encodeFailStreak || 0) + 1;
+        if (s.encodeFailStreak >= 45) {
+            abortWebMCodecExport(
+                s,
+                "Video encoding failed repeatedly. Try another browser or lower the window size.",
+            );
+        }
+        return;
+    }
+    vf.close();
+    s.encodeFailStreak = 0;
+    s.frameIndex += 1;
+}
+
+async function finalizeWebMCodecExport(session) {
+    if (!session || session._cleaned) return;
+    session._finalizing = true;
+    session._cleaned = true;
+    if (session._stuckGuardTimer != null) {
+        clearTimeout(session._stuckGuardTimer);
+        session._stuckGuardTimer = null;
+    }
+
+    setWebmExportStatus("Finishing WebM… (may take up to a minute)");
+
+    let blob = null;
+    try {
+        if ((session.frameIndex ?? 0) < 1) {
+            throw new Error(
+                "No video frames were encoded. The canvas may not be readable in this browser or context.",
+            );
+        }
+        await Promise.race([
+            session.encoder.flush(),
+            new Promise((_, reject) =>
+                setTimeout(
+                    () => reject(new Error("Encoder flush timed out")),
+                    WEBM_FLUSH_TIMEOUT_MS,
+                ),
+            ),
+        ]);
+        session.muxer.finalize();
+        const buf = session.muxer.target.buffer;
+        blob =
+            buf && buf.byteLength > 0
+                ? new Blob([buf], { type: "video/webm" })
+                : new Blob();
+    } catch (e) {
+        console.error("WebM finalize:", e);
+        alert(`WebM export failed: ${e.message || e}`);
+    } finally {
+        try {
+            session.encoder.close();
+        } catch (e2) {
+            /* ignore */
+        }
+    }
+
+    try {
+        restoreAfterWebMCodecSession(session, blob);
+    } catch (e) {
+        console.error("WebM restore failed:", e);
+        try {
+            restoreAfterWebMCodecSession(session, null);
+        } catch (e2) {
+            webmCodecSession = null;
+            setWebmExportStatus("", false);
+            refreshExportToolbarState();
+        }
+    }
+}
+
+/** Always re-enables WebM first so a throw during scene/playhead restore cannot strand the UI. */
+function restoreAfterWebMCodecSession(session, blob) {
+    webmCodecSession = null;
+    setWebmExportStatus("", false);
+    refreshExportToolbarState();
+
+    try {
+        scene.background = session.prevBg;
+        restoreExportOverlayVisibility(session.overlaySnap);
+        foldPlaybackActive = session.prevFoldPlaybackActive;
+        lastFoldPlaybackTime = 0;
+        if (foldPlayPause) setFoldPlayPauseGlyph(foldPlaybackActive);
+        if (NUM_ANIMATION_STAGES >= 1) {
+            applyFoldPlayhead(session.prevPlayhead, { skipUi: true });
+            updateFoldPlayheadUi();
+            refreshFoldControlState();
+        } else {
+            updateFoldPlayheadUi();
+            refreshFoldControlState();
+        }
+    } catch (e) {
+        console.error("WebM scene/fold restore:", e);
+    }
+
+    try {
+        if (blob != null && blob.size > 0) {
+            showWebMReadyForDownload(blob);
+        } else if (blob != null) {
+            showWebMDownloadOffer(
+                false,
+                "WebM export produced no video data. Check that WebCodecs VideoEncoder is enabled (Chromium: chrome://flags if needed).",
+            );
+        }
+    } catch (e) {
+        console.error("WebM download offer:", e);
+        setWebmExportStatus(
+            `WebM encoded (${blob?.size ?? 0} bytes) but the save box failed to open. Check the console.`,
+            true,
+        );
+    }
+}
+
+function abortWebMCodecExport(session, message) {
+    if (!session || session._cleaned) return;
+    session._cleaned = true;
+    if (session._stuckGuardTimer != null) {
+        clearTimeout(session._stuckGuardTimer);
+        session._stuckGuardTimer = null;
+    }
+    webmCodecSession = null;
+    try {
+        session.encoder.close();
+    } catch (e) {
+        /* ignore */
+    }
+    restoreAfterWebMCodecSession(session, null);
+    if (message) alert(message);
+}
+
+async function pickWebCodecConfig(w, h) {
+    if (typeof VideoEncoder === "undefined") return null;
+    const bitrate = 2_400_000;
+    const specs = [
+        { codec: "vp09.00.10.08", mux: "V_VP9" },
+        { codec: "vp8", mux: "V_VP8" },
+    ];
+    for (let i = 0; i < specs.length; i++) {
+        const s = specs[i];
+        try {
+            const base = {
+                codec: s.codec,
+                width: w,
+                height: h,
+                bitrate,
+                framerate: WEBM_EXPORT_TARGET_FPS,
+            };
+            const r = await VideoEncoder.isConfigSupported(base);
+            if (r?.supported) {
+                return {
+                    muxCodec: s.mux,
+                    configure: r.config || { ...base },
+                };
+            }
+        } catch (e) {
+            /* try next */
+        }
+    }
+    return null;
+}
+
+function hideWebMDownloadOffer() {
+    pendingWebmBlob = null;
+    pendingWebmFilename = "export.webm";
+    if (webmDownloadOfferEl) webmDownloadOfferEl.hidden = true;
+    if (webmSaveFileBtn) webmSaveFileBtn.hidden = true;
+    if (webmDownloadDismissBtn) webmDownloadDismissBtn.hidden = true;
+    if (webmDownloadOfferTextEl) {
+        webmDownloadOfferTextEl.textContent = "";
+        webmDownloadOfferTextEl.hidden = true;
+    }
+    setWebmExportStatus("", false);
+}
+
+function showWebMDownloadOffer(hasSaveButton, message) {
+    if (!webmDownloadOfferEl) {
+        alert(
+            `${message || "Video export is ready."}\n\nIf you expected a Save video file control here, hard-refresh the page (an old cached copy may be missing that UI).`,
+        );
+        return;
+    }
+    const msg = (message || "").trim();
+    if (webmDownloadOfferTextEl) {
+        if (msg) {
+            webmDownloadOfferTextEl.textContent = msg;
+            webmDownloadOfferTextEl.hidden = false;
+        } else {
+            webmDownloadOfferTextEl.textContent = "";
+            webmDownloadOfferTextEl.hidden = true;
+        }
+    }
+    if (webmSaveFileBtn) webmSaveFileBtn.hidden = !hasSaveButton;
+    if (webmDownloadDismissBtn) webmDownloadDismissBtn.hidden = false;
+    webmDownloadOfferEl.hidden = false;
+    window.requestAnimationFrame(() => {
+        try {
+            webmDownloadOfferEl.scrollIntoView({
+                block: "nearest",
+                behavior: "smooth",
+            });
+        } catch (e) {
+            /* ignore */
+        }
+    });
+}
+
+function showWebMReadyForDownload(blob) {
+    pendingWebmBlob = blob;
+    pendingWebmFilename = `${sanitizeForFilename(currentNetName)}.webm`;
+    showWebMDownloadOffer(true, "");
+}
+
+async function onWebMSaveFileClick() {
+    if (!pendingWebmBlob) return;
+    if (typeof window.showSaveFilePicker === "function") {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: pendingWebmFilename,
+                types: [
+                    {
+                        description: "WebM video",
+                        accept: { "video/webm": [".webm"] },
+                    },
+                ],
+            });
+            const writable = await handle.createWritable();
+            await writable.write(pendingWebmBlob);
+            await writable.close();
+            hideWebMDownloadOffer();
+            return;
+        } catch (e) {
+            if (e && e.name === "AbortError") return;
+            console.warn("showSaveFilePicker failed, trying download link:", e);
+        }
+    }
+    const url = URL.createObjectURL(pendingWebmBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = pendingWebmFilename;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+    hideWebMDownloadOffer();
+}
+
+function exportWebM() {
+    void exportWebMAsync();
+}
+
+async function exportWebMAsync() {
+    if (webmCodecSession) return;
+    hideWebMDownloadOffer();
+    setExportCategoryPanels(null);
+    if (!f1Mesh || !renderer || !scene || !camera) {
+        alert("Load a net first.");
+        return;
+    }
+
+    let muxMod;
+    try {
+        setWebmExportStatus("Loading WebM muxer…");
+        muxMod = await loadWebMMuxerOnce();
+    } catch (e) {
+        setWebmExportStatus("", false);
+        alert(
+            `Could not load WebM muxer (js/webm-muxer.mjs). Hard-refresh the page or check the console: ${e.message || e}`,
+        );
+        return;
+    }
+    const { Muxer, ArrayBufferTarget } = muxMod;
+    if (!Muxer || !ArrayBufferTarget) {
+        setWebmExportStatus("", false);
+        alert("WebM muxer module is missing exports.");
+        return;
+    }
+
+    const canvas = renderer.domElement;
+    const w = Math.max(2, (canvas.width & ~1) || canvas.width);
+    const h = Math.max(2, (canvas.height & ~1) || canvas.height);
+
+    setWebmExportStatus("Checking video codec support…");
+    const vcfg = await pickWebCodecConfig(w, h);
+    if (!vcfg) {
+        setWebmExportStatus("", false);
+        alert(
+            "WebM export needs WebCodecs VideoEncoder (Chrome, Edge, Brave, Opera, or Safari 17+). Update the browser or try another one.",
+        );
+        return;
+    }
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+        target,
+        video: {
+            codec: vcfg.muxCodec,
+            width: w,
+            height: h,
+            frameRate: WEBM_EXPORT_TARGET_FPS,
+        },
+        firstTimestampBehavior: "offset",
+    });
+
+    const encoder = new VideoEncoder({
+        output: (chunk, meta) => {
+            try {
+                muxer.addVideoChunk(chunk, meta);
+            } catch (err) {
+                console.error(err);
+            }
+        },
+        error: (e) => {
+            console.error("VideoEncoder:", e);
+            const s = webmCodecSession;
+            if (s && !s._cleaned) {
+                abortWebMCodecExport(s, `Video encoder error: ${e.message || e}`);
+            }
+        },
+    });
+
+    try {
+        encoder.configure(vcfg.configure);
+    } catch (e) {
+        try {
+            encoder.close();
+        } catch (e2) {
+            /* ignore */
+        }
+        setWebmExportStatus("", false);
+        alert(`Could not configure video encoder: ${e.message || e}`);
+        return;
+    }
+
+    const overlaySnap = snapshotExportOverlayVisibility();
+    hideExportOverlays(overlaySnap);
+    const prevBg = scene.background;
+    const useDark = Boolean(darkCanvasCheckbox?.checked);
+    scene.background = new THREE.Color(useDark ? 0x141418 : 0xffffff);
+
+    const hasFold = NUM_ANIMATION_STAGES >= 1;
+    const prevPlayhead = foldPlayhead;
+    const prevFoldPlaybackActive = foldPlaybackActive;
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
+
+    if (hasFold) {
+        applyFoldPlayhead(0, { skipUi: true });
+    }
+    updateFoldPlayheadUi();
+
+    const session = {
+        muxer,
+        encoder,
+        frameIndex: 0,
+        overlaySnap,
+        prevBg,
+        prevPlayhead,
+        prevFoldPlaybackActive,
+        hasFold,
+        pendingStop: false,
+        holdStartMs: hasFold ? 450 : 0,
+        foldDurationMs: hasFold
+            ? NUM_ANIMATION_STAGES *
+              (Number.isFinite(currentAnimationDuration) && currentAnimationDuration > 0
+                  ? currentAnimationDuration
+                  : 500)
+            : 0,
+        holdEndMs: hasFold ? 1000 : 0,
+        staticDurationMs: hasFold ? 0 : 4000,
+        t0: performance.now(),
+        _cleaned: false,
+        _finalizing: false,
+    };
+
+    webmCodecSession = session;
+    refreshExportToolbarState();
+    setWebmExportStatus(
+        hasFold ? "Recording fold to WebM…" : "Recording view to WebM…",
+    );
+
+    session._stuckGuardTimer = window.setTimeout(() => {
+        session._stuckGuardTimer = null;
+        if (session._cleaned) return;
+        abortWebMCodecExport(
+            session,
+            "WebM export timed out. Reload the page and try again.",
+        );
+    }, 120000);
+}
+
 /** Snapshot visibility of scene overlays for export; pair is [object, visible]. */
 function snapshotExportOverlayVisibility() {
     const pairs = [];
@@ -1064,6 +3245,60 @@ function restoreExportOverlayVisibility(pairs) {
         const o = pairs[i][0];
         const v = pairs[i][1];
         if (o) o.visible = v;
+    }
+    syncCrosshairAxesHelperVisibilityForRenderMode();
+}
+
+/** World axes crosshair: off in Render shading; also re-sync after PNG/WebM overlay restore. */
+function syncCrosshairAxesHelperVisibilityForRenderMode() {
+    const ch =
+        crosshairAxesHelper ?? scene?.getObjectByName("crosshairAxesHelper");
+    if (!ch) return;
+    crosshairAxesHelper = ch;
+    const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
+    ch.visible = mode !== "rendered";
+}
+
+/**
+ * Move XYZ crosshair to the world-space center of all face polygons (updates as the net folds).
+ * Also moves {@link TrackballControls#target} to that point and shifts the camera by the same
+ * delta so rotation orbits the shape instead of the old origin (“planet in space” effect).
+ */
+function updateCrosshairAxesWorldPosition() {
+    const ch =
+        crosshairAxesHelper ?? scene?.getObjectByName("crosshairAxesHelper");
+    if (!ch) return;
+    crosshairAxesHelper = ch;
+
+    foldedNetCenterWorld.set(0, 0, 0);
+    if (f1Mesh) {
+        scene.updateMatrixWorld(true);
+        const box = new THREE.Box3();
+        let empty = true;
+        forEachFaceMesh((mesh) => {
+            const b = new THREE.Box3().setFromObject(mesh);
+            if (!b.isEmpty()) {
+                if (empty) {
+                    box.copy(b);
+                    empty = false;
+                } else {
+                    box.union(b);
+                }
+            }
+        });
+        if (!empty) box.getCenter(foldedNetCenterWorld);
+    }
+
+    ch.position.copy(foldedNetCenterWorld);
+
+    if (controls && camera) {
+        const tx = controls.target.x;
+        const ty = controls.target.y;
+        const tz = controls.target.z;
+        controls.target.copy(foldedNetCenterWorld);
+        camera.position.x += foldedNetCenterWorld.x - tx;
+        camera.position.y += foldedNetCenterWorld.y - ty;
+        camera.position.z += foldedNetCenterWorld.z - tz;
     }
 }
 
@@ -1265,7 +3500,46 @@ function getCurrentNetDataSnapshot() {
     return null;
 }
 
+/** Open one export sub-panel ("image" | "3d") or collapse both (null). */
+function setExportCategoryPanels(open) {
+    const imageRow = document.getElementById("exportImageSubrow");
+    const d3Row = document.getElementById("export3dSubrow");
+    const imgBtn = document.getElementById("exportImageToggleBtn");
+    const d3Btn = document.getElementById("export3dToggleBtn");
+    if (!imageRow || !d3Row || !imgBtn || !d3Btn) return;
+    const showImg = open === "image";
+    const show3d = open === "3d";
+    imageRow.hidden = !showImg;
+    d3Row.hidden = !show3d;
+    imgBtn.setAttribute("aria-expanded", showImg ? "true" : "false");
+    d3Btn.setAttribute("aria-expanded", show3d ? "true" : "false");
+    imgBtn.classList.toggle("net-export-main-btn--open", showImg);
+    d3Btn.classList.toggle("net-export-main-btn--open", show3d);
+}
+
+const EXPORT_TOOLBAR_IDS = [
+    "exportNetJsonBtn",
+    "exportImageToggleBtn",
+    "export3dToggleBtn",
+    "exportWebmButton",
+    "exportPngButton",
+    "exportSvgButton",
+    "exportObjButton",
+    "exportStlButton",
+];
+
+/** Enable export UI only when a net is on stage; collapse sub-panels when disabled. */
+function refreshExportToolbarState() {
+    const can = Boolean(f1Mesh) && !webmCodecSession;
+    for (let i = 0; i < EXPORT_TOOLBAR_IDS.length; i++) {
+        const el = document.getElementById(EXPORT_TOOLBAR_IDS[i]);
+        if (el) el.disabled = !can;
+    }
+    if (!can) setExportCategoryPanels(null);
+}
+
 function exportNetJSON() {
+    setExportCategoryPanels(null);
     const data = getCurrentNetDataSnapshot();
     if (!data) {
         alert("Load or create a net first.");
@@ -1289,7 +3563,11 @@ function setCreateSectionExpanded(expanded) {
     if (!sec || !btn) return;
     sec.hidden = !expanded;
     btn.setAttribute("aria-expanded", expanded ? "true" : "false");
-    btn.textContent = expanded ? "Hide Create" : "Create a net";
+    btn.title = expanded ? "Hide create panel" : "Create a net";
+    btn.setAttribute(
+        "aria-label",
+        expanded ? "Hide create net panel" : "Create a net",
+    );
 }
 
 function showSaveNetFeedback(message) {
@@ -1347,8 +3625,65 @@ function createCrosshairAxesHelper(size = 5) {
     return lines;
 }
 
+function wireAppearanceSwitchAria(cb) {
+    if (!cb) return;
+    const sync = () =>
+        cb.setAttribute("aria-checked", cb.checked ? "true" : "false");
+    sync();
+    cb.addEventListener("change", sync);
+}
+
 // --- Initialization Function ---
 function init() {
+    try {
+        const v = localStorage.getItem(DYE_PALETTE_STORAGE_KEY);
+        if (v && DYE_PALETTE_DEFINITIONS[v]) currentDyePaletteId = v;
+    } catch (e) {
+        /* ignore */
+    }
+    try {
+        const m = localStorage.getItem(SWATCH_APPLY_MODE_STORAGE_KEY);
+        if (m && SWATCH_APPLY_MODE_IDS.includes(m))
+            currentSwatchApplyMode = m;
+        const u = localStorage.getItem(SWATCH_UNIFORM_PICK_ID_STORAGE_KEY);
+        if (u) currentSwatchUniformPickId = u;
+    } catch (e) {
+        /* ignore */
+    }
+    try {
+        const ft = localStorage.getItem(FACE_TEXTURE_SET_STORAGE_KEY);
+        if (ft && FACE_TEXTURE_SET_IDS.includes(ft))
+            currentFaceTextureSetId = ft;
+    } catch (e) {
+        /* ignore */
+    }
+    initAppearanceModeFromStorage();
+    try {
+        const ca = localStorage.getItem(CLOTH_ATLAS_ID_A_STORAGE_KEY);
+        const cb = localStorage.getItem(CLOTH_ATLAS_ID_B_STORAGE_KEY);
+        const cp = localStorage.getItem(CLOTH_ATLAS_PATTERN_STORAGE_KEY);
+        const cta = localStorage.getItem(CLOTH_ATLAS_TINT_A_STORAGE_KEY);
+        const ctb = localStorage.getItem(CLOTH_ATLAS_TINT_B_STORAGE_KEY);
+        if (ca)
+            currentClothAtlasIdA = normalizeClothRegistryId(
+                ca,
+                currentClothAtlasIdA,
+            );
+        if (cb)
+            currentClothAtlasIdB = normalizeClothRegistryId(
+                cb,
+                currentClothAtlasIdB,
+            );
+        if (cp && CLOTH_ATLAS_PATTERN_IDS.includes(cp))
+            currentClothAtlasPattern = cp;
+        if (cta && /^#[0-9A-Fa-f]{6}$/i.test(cta))
+            currentClothAtlasTintHexA = cta;
+        if (ctb && /^#[0-9A-Fa-f]{6}$/i.test(ctb))
+            currentClothAtlasTintHexB = ctb;
+    } catch (e) {
+        /* ignore */
+    }
+
     // Basic scene setup
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x141418);
@@ -1356,7 +3691,10 @@ function init() {
     camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 1000);
     camera.position.set(0, 20, 20);
     camera.lookAt(0, 0, 0);
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        preserveDrawingBuffer: true,
+    });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1393,23 +3731,33 @@ function init() {
     controls.rotateSpeed = 1.2;
     controls.dynamicDampingFactor = 0.12;
     controls.panSpeed = 0.45;
-    scene.add(createCrosshairAxesHelper(5));
+    crosshairAxesHelper = createCrosshairAxesHelper(5);
+    crosshairAxesHelper.visible =
+        RENDER_MODES[currentRenderModeIndex] !== "rendered";
+    scene.add(crosshairAxesHelper);
     edgePickGroup = new THREE.Group();
     edgePickGroup.name = "edgePickGroup";
     scene.add(edgePickGroup);
 
     // Get DOM Elements
-    foldButton = document.getElementById("foldButton");
     instantFoldButton = document.getElementById("instantFoldButton");
-    pauseButton = document.getElementById("pauseButton");
+    foldPlayPause = document.getElementById("foldPlayPause");
+    foldPlayReverse = document.getElementById("foldPlayReverse");
+    foldJumpToStart = document.getElementById("foldJumpToStart");
+    foldSkipBack = document.getElementById("foldSkipBack");
+    foldSkipForward = document.getElementById("foldSkipForward");
+    foldPlayheadSlider = document.getElementById("foldPlayheadSlider");
+    foldPlayheadLabel = document.getElementById("foldPlayheadLabel");
     speedSlider = document.getElementById("speedSlider");
     speedValueSpan = document.getElementById("speedValue");
     toggleNormalsCheckbox = document.getElementById("toggleNormals");
     netFileInput = document.getElementById("netFile");
     infoDisplay = document.getElementById("info");
     exportObjButton = document.getElementById("exportObjButton");
+    exportStlButton = document.getElementById("exportStlButton");
     exportPngButton = document.getElementById("exportPngButton");
     exportSvgButton = document.getElementById("exportSvgButton");
+    exportWebmButton = document.getElementById("exportWebmButton");
     darkCanvasCheckbox = document.getElementById("darkCanvas");
     renderModeSlider = document.getElementById("renderModeSlider");
     createBaseBlockEl = document.getElementById("createBaseBlock");
@@ -1418,8 +3766,26 @@ function init() {
     // Initial UI setup
     speedSlider.value = currentAnimationDuration;
     speedValueSpan.textContent = `${currentAnimationDuration} ms`;
-    pauseButton.disabled = true;
+    updateSpeedSliderTrackFill();
+    if (foldPlayPause) {
+        setFoldPlayPauseGlyph(false);
+        foldPlayPause.disabled = true;
+    }
+    if (foldPlayReverse) foldPlayReverse.disabled = true;
+    if (foldJumpToStart) foldJumpToStart.disabled = true;
+    if (foldSkipBack) foldSkipBack.disabled = true;
+    if (foldSkipForward) foldSkipForward.disabled = true;
     toggleNormalsCheckbox.checked = false;
+    wireAppearanceSwitchAria(document.getElementById("colorBySidesCheckbox"));
+    wireAppearanceSwitchAria(document.getElementById("opaqueStellationsCheckbox"));
+    wireAppearanceSwitchAria(toggleNormalsCheckbox);
+    const foldDirChallengeCb = document.getElementById(
+        "foldDirectionChallengeToggle",
+    );
+    wireAppearanceSwitchAria(foldDirChallengeCb);
+    foldDirChallengeCb?.addEventListener("change", () => {
+        updateFoldDirectionChallengeHintVisibility();
+    });
     darkCanvasCheckbox.checked = true;
     applyCanvasTheme(true);
     darkCanvasCheckbox.setAttribute("aria-checked", "true");
@@ -1432,13 +3798,217 @@ function init() {
     updateRenderModeStopsHighlight();
     infoDisplay.textContent = "Load a net file"; // Initial title
 
-    document.getElementById("colorBySidesCheckbox")?.addEventListener("change", () => {
-        if (lastLoadedNetData) {
-            loadAndProcessNet(JSON.parse(JSON.stringify(lastLoadedNetData)), {
-                allowUnknownSignature: true,
-            });
-        }
+    document.getElementById("colorBySidesCheckbox")?.addEventListener(
+        "change",
+        () => {
+            if (lastLoadedNetData) {
+                loadAndProcessNet(JSON.parse(JSON.stringify(lastLoadedNetData)), {
+                    allowUnknownSignature: true,
+                });
+            }
+            syncDyePaletteSelectUi();
+        },
+    );
+
+    const dyePaletteSelect = document.getElementById("dyePaletteSelect");
+    if (dyePaletteSelect) {
+        dyePaletteSelect.value = currentDyePaletteId;
+        dyePaletteSelect.addEventListener("change", () => {
+            const prev = currentDyePaletteId;
+            const v = dyePaletteSelect.value;
+            if (!v || !DYE_PALETTE_DEFINITIONS[v]) return;
+            currentDyePaletteId = v;
+            try {
+                localStorage.setItem(DYE_PALETTE_STORAGE_KEY, v);
+            } catch (e) {
+                /* ignore */
+            }
+            const wasSwatch =
+                DYE_PALETTE_DEFINITIONS[prev]?._swatchPalette === true;
+            const nowSwatch =
+                DYE_PALETTE_DEFINITIONS[v]?._swatchPalette === true;
+            if (wasSwatch || nowSwatch) clearAllSwatchTextureCache();
+            if (nowSwatch) sanitizeFaceSwatchMapForActivePalette();
+            if (
+                nowSwatch &&
+                f1Mesh &&
+                faceSwatchByFaceId.size === 0 &&
+                isSwatchDyePaletteSelected()
+            ) {
+                runSwatchDistributionFromCurrentMode();
+            }
+            syncSwatchPaletteAppearanceUi();
+            refreshAllFaceDisplayColors();
+        });
+    }
+    syncDyePaletteSelectUi();
+
+    document.getElementById("swatchApplyModeSelect")?.addEventListener(
+        "change",
+        (e) => {
+            const v = e.target.value;
+            if (!SWATCH_APPLY_MODE_IDS.includes(v)) return;
+            currentSwatchApplyMode = v;
+            try {
+                localStorage.setItem(SWATCH_APPLY_MODE_STORAGE_KEY, v);
+            } catch (e2) {
+                /* ignore */
+            }
+            syncSwatchPaletteAppearanceUi();
+            if (isSwatchDyePaletteSelected() && f1Mesh) {
+                runSwatchDistributionFromCurrentMode();
+                refreshAllFaceDisplayColors();
+            }
+        },
+    );
+    document.getElementById("swatchUniformPickSelect")?.addEventListener(
+        "change",
+        (e) => {
+            const v = e.target.value;
+            if (!v) return;
+            currentSwatchUniformPickId = v;
+            try {
+                localStorage.setItem(SWATCH_UNIFORM_PICK_ID_STORAGE_KEY, v);
+            } catch (e2) {
+                /* ignore */
+            }
+            if (
+                isSwatchDyePaletteSelected() &&
+                currentSwatchApplyMode === "uniformPick" &&
+                f1Mesh
+            ) {
+                runSwatchDistributionFromCurrentMode();
+                refreshAllFaceDisplayColors();
+            }
+        },
+    );
+
+    document.querySelectorAll("[data-appearance-mode]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const m = btn.getAttribute("data-appearance-mode");
+            if (m) applyAppearanceMode(m);
+        });
     });
+    const appearanceTextureKindSelect = document.getElementById(
+        "appearanceTextureKindSelect",
+    );
+    if (appearanceTextureKindSelect) {
+        appearanceTextureKindSelect.addEventListener("change", () => {
+            const v = appearanceTextureKindSelect.value;
+            if (v !== "washiSamples" && v !== "clothAtlas") return;
+            currentAppearanceMode = "texture";
+            try {
+                localStorage.setItem(APPEARANCE_MODE_STORAGE_KEY, "texture");
+            } catch (e) {
+                /* ignore */
+            }
+            syncAppearanceModeSegmentedUi();
+            applyFaceTextureSetId(v);
+        });
+    }
+    document
+        .getElementById("appearanceClearFaceOverridesBtn")
+        ?.addEventListener("click", () => {
+            clearAllFaceHexOverridesAndRefresh();
+        });
+
+    fillClothAtlasRegistrySelect(document.getElementById("clothAtlasSelectA"));
+    fillClothAtlasRegistrySelect(document.getElementById("clothAtlasSelectB"));
+    document
+        .getElementById("clothAtlasPatternSelect")
+        ?.addEventListener("change", (e) => {
+            const v = e.target.value;
+            if (!CLOTH_ATLAS_PATTERN_IDS.includes(v)) return;
+            currentClothAtlasPattern = v;
+            try {
+                localStorage.setItem(CLOTH_ATLAS_PATTERN_STORAGE_KEY, v);
+            } catch (err) {
+                /* ignore */
+            }
+            if (currentFaceTextureSetId !== "clothAtlas") return;
+            syncClothAtlasAppearanceUi();
+            bumpClothAtlasTexturesAndRefreshFaces();
+        });
+    document.getElementById("clothAtlasSelectA")?.addEventListener(
+        "change",
+        (e) => {
+            currentClothAtlasIdA = normalizeClothRegistryId(
+                e.target.value,
+                CLOTH_ATLAS_REGISTRY[0].id,
+            );
+            try {
+                localStorage.setItem(
+                    CLOTH_ATLAS_ID_A_STORAGE_KEY,
+                    currentClothAtlasIdA,
+                );
+            } catch (err) {
+                /* ignore */
+            }
+            if (currentFaceTextureSetId !== "clothAtlas") return;
+            bumpClothAtlasTexturesAndRefreshFaces();
+        },
+    );
+    document.getElementById("clothAtlasSelectB")?.addEventListener(
+        "change",
+        (e) => {
+            currentClothAtlasIdB = normalizeClothRegistryId(
+                e.target.value,
+                CLOTH_ATLAS_REGISTRY[0].id,
+            );
+            try {
+                localStorage.setItem(
+                    CLOTH_ATLAS_ID_B_STORAGE_KEY,
+                    currentClothAtlasIdB,
+                );
+            } catch (err) {
+                /* ignore */
+            }
+            if (currentFaceTextureSetId !== "clothAtlas") return;
+            bumpClothAtlasTexturesAndRefreshFaces();
+        },
+    );
+    const onClothTintInput = () => {
+        const a = document.getElementById("clothAtlasTintA");
+        const b = document.getElementById("clothAtlasTintB");
+        if (a?.value) currentClothAtlasTintHexA = a.value;
+        if (b?.value) currentClothAtlasTintHexB = b.value;
+        try {
+            localStorage.setItem(
+                CLOTH_ATLAS_TINT_A_STORAGE_KEY,
+                currentClothAtlasTintHexA,
+            );
+            localStorage.setItem(
+                CLOTH_ATLAS_TINT_B_STORAGE_KEY,
+                currentClothAtlasTintHexB,
+            );
+        } catch (err) {
+            /* ignore */
+        }
+        if (
+            currentFaceTextureSetId !== "clothAtlas" ||
+            currentClothAtlasPattern !== "alternateTint"
+        )
+            return;
+        refreshAllFaceDisplayColors();
+    };
+    document
+        .getElementById("clothAtlasTintA")
+        ?.addEventListener("input", onClothTintInput);
+    document
+        .getElementById("clothAtlasTintB")
+        ?.addEventListener("input", onClothTintInput);
+    syncClothAtlasAppearanceUi();
+    syncAppearanceModeSegmentedUi();
+    syncAppearanceTexturePanelUi();
+    syncAppearanceCustomRowUi();
+    if (currentAppearanceMode === "dye") {
+        const cbs = document.getElementById("colorBySidesCheckbox");
+        if (cbs && !cbs.checked) {
+            cbs.checked = true;
+            wireAppearanceSwitchAria(cbs);
+            syncDyePaletteSelectUi();
+        }
+    }
 
     // Trophy preview (gold PBR) — disabled in UI; re-enable by restoring the Appearance checkbox + handler.
     // document.getElementById("trophyPreviewGoldCheckbox")?.addEventListener("change", (e) => {
@@ -1451,8 +4021,13 @@ function init() {
 
     // Add Event Listeners
     window.addEventListener("resize", onWindowResize);
-    foldButton.addEventListener("click", toggleFold);
-    pauseButton.addEventListener("click", togglePause);
+    foldPlayPause?.addEventListener("click", toggleFoldPlaybackPause);
+    foldPlayReverse?.addEventListener("click", onFoldPlayReverseClick);
+    foldJumpToStart?.addEventListener("click", onFoldJumpToStart);
+    foldSkipBack?.addEventListener("click", onFoldSkipBack);
+    foldSkipForward?.addEventListener("click", onFoldSkipForward);
+    foldPlayheadSlider?.addEventListener("input", onFoldPlayheadSliderInput);
+    foldPlayheadSlider?.addEventListener("change", onFoldPlayheadSliderInput);
     instantFoldButton?.addEventListener("click", instantFoldToClosed);
     document.getElementById("stellationPresetSelect")?.addEventListener(
         "change",
@@ -1467,6 +4042,19 @@ function init() {
             refreshStellationSectionState();
         },
     );
+    const stellationInfoBtn = document.getElementById("stellationInfoBtn");
+    const stellationHelpPanel = document.getElementById("stellationHelpPanel");
+    stellationInfoBtn?.addEventListener("click", () => {
+        if (!stellationHelpPanel) return;
+        const open = stellationHelpPanel.hasAttribute("hidden");
+        if (open) {
+            stellationHelpPanel.removeAttribute("hidden");
+            stellationInfoBtn.setAttribute("aria-expanded", "true");
+        } else {
+            stellationHelpPanel.setAttribute("hidden", "");
+            stellationInfoBtn.setAttribute("aria-expanded", "false");
+        }
+    });
     document
         .getElementById("stellationCapHeightSlider")
         ?.addEventListener("input", () => {
@@ -1515,6 +4103,7 @@ function init() {
             Math.max(min, Number.isFinite(raw) ? raw : min),
         );
         speedValueSpan.textContent = `${currentAnimationDuration} ms`;
+        updateSpeedSliderTrackFill();
     });
     toggleNormalsCheckbox.addEventListener(
         "change",
@@ -1528,15 +4117,28 @@ function init() {
         );
     });
     document
-        .getElementById("translucentStellationsCheckbox")
+        .getElementById("opaqueStellationsCheckbox")
         ?.addEventListener("change", () => {
             rebuildStellationUniformCapsIfNeeded();
             rebuildStellationDiagramSelection3D();
         });
     netFileInput.addEventListener("change", handleFileSelect);
     exportObjButton?.addEventListener("click", exportOBJ);
+    exportStlButton?.addEventListener("click", exportSTL);
     exportPngButton?.addEventListener("click", exportPNGTransparent);
     exportSvgButton?.addEventListener("click", exportSVGView);
+    exportWebmButton?.addEventListener("click", exportWebM);
+
+    document.getElementById("exportImageToggleBtn")?.addEventListener("click", () => {
+        const row = document.getElementById("exportImageSubrow");
+        const open = row && !row.hidden;
+        setExportCategoryPanels(open ? null : "image");
+    });
+    document.getElementById("export3dToggleBtn")?.addEventListener("click", () => {
+        const row = document.getElementById("export3dSubrow");
+        const open = row && !row.hidden;
+        setExportCategoryPanels(open ? null : "3d");
+    });
 
     builderHintEl = document.getElementById("builderEdgeHint");
     createKindSelect = document.getElementById("createKindSelect");
@@ -1553,6 +4155,13 @@ function init() {
     attachIrregularSelect = document.getElementById("attachIrregularSelect");
     attachColorInput = document.getElementById("attachColorInput");
     saveNetFeedbackEl = document.getElementById("saveNetFeedback");
+    webmDownloadOfferEl = document.getElementById("webmDownloadOffer");
+    webmDownloadOfferTextEl = document.getElementById("webmDownloadOfferText");
+    webmSaveFileBtn = document.getElementById("webmSaveFileBtn");
+    webmDownloadDismissBtn = document.getElementById("webmDownloadDismissBtn");
+    webmExportStatusEl = document.getElementById("webmExportStatus");
+    webmSaveFileBtn?.addEventListener("click", onWebMSaveFileClick);
+    webmDownloadDismissBtn?.addEventListener("click", hideWebMDownloadOffer);
 
     if (createIrregularSelect) {
         createIrregularSelect.innerHTML = "";
@@ -1781,8 +4390,9 @@ function init() {
             return;
         }
         const presets = NetBuilder.loadCustomPresetsFromStorage();
+        const newPresetId = NetBuilder.makePresetId();
         presets.push({
-            id: NetBuilder.makePresetId(),
+            id: newPresetId,
             name: trimmed,
             netData: data,
             savedAt: Date.now(),
@@ -1796,7 +4406,7 @@ function init() {
             return;
         }
         if (isNetBuilderActive) builderDirty = false;
-        refreshSavedNetsSelect();
+        refreshSavedNetsSelect(newPresetId);
         showSaveNetFeedback(`Saved “${trimmed}” to Saved nets.`);
         console.log(`Saved net preset: ${trimmed} (${presets.length} total)`);
     });
@@ -1880,7 +4490,7 @@ function init() {
     });
     renderer.domElement.addEventListener("click", (ev) => {
         if (!isNetBuilderActive) return;
-        if (isFolded || isAnimating) return;
+        if (isFolded || isFoldOrPlaybackBusy()) return;
         if (builderHoveredPick?.userData?.pick) {
             clearBuilderFaceSelection();
             const p = builderHoveredPick.userData.pick;
@@ -1891,7 +4501,7 @@ function init() {
             if (builderAttachPanel) builderAttachPanel.hidden = false;
             return;
         }
-        const hit = pickBuilderFaceMesh(ev.clientX, ev.clientY);
+        const hit = pickFaceMeshAtClient(ev.clientX, ev.clientY);
         if (hit?.userData?.faceId != null) {
             builderPendingEdge = null;
             if (builderAttachPanel) builderAttachPanel.hidden = true;
@@ -1903,7 +4513,7 @@ function init() {
 
     renderer.domElement.addEventListener("dblclick", (ev) => {
         if (!isNetBuilderActive || !builderNetData) return;
-        if (isFolded || isAnimating) return;
+        if (isFolded || isFoldOrPlaybackBusy()) return;
         if (!builderLastQuickAttach) return;
         const pick = pickEdgePickAtClient(ev.clientX, ev.clientY);
         if (!pick) return;
@@ -1924,6 +4534,21 @@ function init() {
 
     refreshSavedNetsSelect();
     refreshFoldControlState();
+    syncDyePaletteSelectUi();
+    refreshExportToolbarState();
+    wireFaceHexContextMenu();
+    syncFoldChallengeUi();
+
+    if (currentFaceTextureSetId === "clothAtlas")
+        ensureClothAtlasTexturesLoaded();
+
+    renderer.domElement.addEventListener("contextmenu", (ev) => {
+        if (!f1Mesh) return;
+        const hit = pickFaceMeshAtClient(ev.clientX, ev.clientY);
+        if (!hit || hit.userData.faceId == null) return;
+        ev.preventDefault();
+        showFaceHexContextMenu(ev.clientX, ev.clientY, hit.userData.faceId);
+    });
 
     // Start animation loop
     animate();
@@ -1938,8 +4563,11 @@ function loadAndProcessNet(netData, options = {}) {
     isAnimating = false;
     isPaused = false;
     currentAnimationStage = 0;
-    foldButton.textContent = "Animated Fold";
-    pauseButton.disabled = true;
+    foldPlayhead = 0;
+    foldPlaybackActive = false;
+    foldPlaybackDir = 1;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
 
     try {
         const faceCounts = {};
@@ -1965,25 +4593,37 @@ function loadAndProcessNet(netData, options = {}) {
             faceCounts[key] = (faceCounts[key] || 0) + 1;
         });
         const signature = getFaceCountSignature(faceCounts);
-        const vertexConfigKey = faceCountSigToVertexConfigKey[signature];
+        const polyKeyFromJson =
+            typeof netData.polyKey === "string"
+                ? netData.polyKey.trim()
+                : "";
+        let vertexConfigKey = null;
+        if (polyKeyFromJson && POLYHEDRON_DATA[polyKeyFromJson]) {
+            vertexConfigKey = polyKeyFromJson;
+        } else {
+            vertexConfigKey = faceCountSigToVertexConfigKey[signature];
+        }
+        const perConnFull = netHasPerConnectionFoldAngles(netData);
         if (!vertexConfigKey) {
-            if (!allowUnknownSignature) {
+            if (!allowUnknownSignature && !perConnFull) {
                 throw new Error(
                     `Unknown polyhedron signature: ${signature}. This pattern is not in the fold-angle library yet.`,
                 );
             }
             console.warn(
-                `[Custom net] Signature "${signature}" has no fold table — trial Animated Fold uses guessed angles; click Unfold after.`,
+                perConnFull
+                    ? `[Custom net] Signature "${signature}" — using per-connection foldAngleRad from JSON.`
+                    : `[Custom net] Signature "${signature}" has no fold table — trial Play uses guessed angles; drag Fold toward flat to reset.`,
             );
             currentFoldAngles = null;
             currentNetName = netData.description || "Custom net";
         } else {
             const polyhedronInfo = POLYHEDRON_DATA[vertexConfigKey];
-            if (!polyhedronInfo?.foldAngles)
+            if (!polyhedronInfo?.foldAngles && !perConnFull)
                 throw new Error(
                     `Fold angle data not found for config: ${vertexConfigKey}`,
                 );
-            currentFoldAngles = polyhedronInfo.foldAngles;
+            currentFoldAngles = polyhedronInfo.foldAngles ?? null;
             currentNetName =
                 polyhedronInfo.name || netData.description || "Loaded Net";
         }
@@ -1999,6 +4639,11 @@ function loadAndProcessNet(netData, options = {}) {
 
         setInfoLayoutStatus();
         if (trophyPreviewGoldActive) applyTrophyPreviewGold(true);
+        updateFoldPlayheadUi();
+        refreshExportToolbarState();
+        syncDyePaletteSelectUi();
+        syncFoldChallengeUi();
+        return true;
     } catch (error) {
         console.error("Failed to process net data:", error);
         alert(`Error processing net data: ${error.message}. Check console.`);
@@ -2009,6 +4654,8 @@ function loadAndProcessNet(netData, options = {}) {
         currentFoldAngles = null;
         NUM_ANIMATION_STAGES = 0;
         refreshFoldControlState();
+        syncFoldChallengeUi();
+        return false;
     }
 }
 
@@ -2031,10 +4678,14 @@ function handleFileSelect(event) {
                 return;
             }
             exitNetBuilder();
-            loadAndProcessNet(netData, {
+            const loaded = loadAndProcessNet(netData, {
                 allowUnknownSignature: true,
                 trophyEligible: true,
             });
+            if (loaded) {
+                document.getElementById("presetNets").value = "";
+                document.getElementById("savedNetsSelect").value = "";
+            }
         } catch (error) {
             console.error("Error loading net JSON file:", error);
             alert(`Could not load net file: ${error.message}`);
@@ -2053,11 +4704,13 @@ function handleFileSelect(event) {
 // --- Function to clear existing net geometry ---
 function clearSceneGeometry() {
     console.log("Clearing existing net geometry...");
+    hideFaceHexContextMenu();
     disposeStellationCaps();
     disposeStellationDiagramSelection3D();
     stellDiagramSelectedKeys.clear();
     stellDiagramPickState = null;
     stellDiagramPointerInside = false;
+    stellDiagramHoverCentroidKey = null;
     stellDiagramViewZoom = 1;
     stellDiagramViewPanU = 0;
     stellDiagramViewPanV = 0;
@@ -2106,10 +4759,20 @@ function clearSceneGeometry() {
     pivotsInCurrentStage = [];
     startQuaternions = {};
     targetQuaternions = {};
-    if (foldButton) foldButton.textContent = "Animated Fold";
-    if (pauseButton) pauseButton.disabled = true;
+    foldPlayhead = 0;
+    foldPlaybackActive = false;
+    foldPlaybackDir = 1;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) {
+        setFoldPlayPauseGlyph(false);
+        foldPlayPause.disabled = true;
+    }
+    updateFoldPlayheadUi();
     console.log("Clear complete.");
     refreshFoldControlState();
+    refreshExportToolbarState();
+    syncDyePaletteSelectUi();
+    updateCrosshairAxesWorldPosition();
 }
 
 function pickTrialFailFlavor(runNumber) {
@@ -2176,7 +4839,7 @@ function playFoldSuccessChime() {
 }
 
 function tryScratchFoldTrophyReward() {
-    if (!pendingScratchTrophyKey || !currentFoldAngles) return;
+    if (!pendingScratchTrophyKey || !hasLibraryFoldSupport()) return;
     const data = builderNetData || lastLoadedNetData;
     if (!data) return;
     const k = getVertexConfigKeyForNetData(data);
@@ -2243,32 +4906,39 @@ function beginTrialReboundPause() {
     trialFoldPauseActive = true;
     isAnimating = false;
     isPaused = false;
-    if (pauseButton) {
-        pauseButton.disabled = true;
-        pauseButton.textContent = "Pause";
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) {
+        foldPlayPause.disabled = true;
+        setFoldPlayPauseGlyph(false);
     }
     const flavor = pickTrialFailFlavor(trialFoldRunCount);
     if (infoDisplay) {
-        infoDisplay.textContent = `Trial #${trialFoldRunCount}: ${flavor} — click Unfold when ready.`;
+        infoDisplay.textContent = `Trial #${trialFoldRunCount}: ${flavor} — drag Fold left or skip back to flatten.`;
         infoDisplay.classList.remove("trial-juice");
         infoDisplay.offsetWidth;
         infoDisplay.classList.add("trial-juice");
     }
     triggerTrialRumble();
     playTrialFailBuzzer();
+    updateFoldPlayheadUi();
     refreshFoldControlState();
     syncBuilderEdgePicksVisibility();
 }
 
 /** True when the net has flaps but no fold-angle table (trial fold; user Unfolds manually). */
 function canTrialFoldLayout() {
-    return Boolean(f1Mesh && !currentFoldAngles && NUM_ANIMATION_STAGES >= 1);
+    return Boolean(
+        f1Mesh &&
+            !hasLibraryFoldSupport() &&
+            NUM_ANIMATION_STAGES >= 1,
+    );
 }
 
 /** Status line for nets without a fold table (and hint when trial fold is possible). */
 function setInfoLayoutStatus() {
     if (!infoDisplay || !f1Mesh) return;
-    if (currentFoldAngles) {
+    if (hasLibraryFoldSupport()) {
         infoDisplay.textContent = `Folding: ${currentNetName}`;
         return;
     }
@@ -2278,7 +4948,7 @@ function setInfoLayoutStatus() {
             : "";
     infoDisplay.textContent =
         NUM_ANIMATION_STAGES >= 1
-            ? `Layout: ${currentNetName}${runs} · no fold table — try Animated Fold for a trial (guessed angles), then Unfold`
+            ? `Layout: ${currentNetName}${runs} · no fold table — use Play or drag Fold for a trial; drag to flat to reset`
             : `Layout: ${currentNetName} · folding unavailable`;
 }
 
@@ -2288,7 +4958,7 @@ function refreshEditNetButtonState() {
     if (!editBtn) return;
     const snap = getCurrentNetDataSnapshot();
     const canEdit = Boolean(
-        f1Mesh && snap && !isNetBuilderActive && !isAnimating,
+        f1Mesh && snap && !isNetBuilderActive && !isFoldOrPlaybackBusy(),
     );
     editBtn.disabled = !canEdit;
     if (canEdit) {
@@ -2297,20 +4967,25 @@ function refreshEditNetButtonState() {
     } else if (isNetBuilderActive) {
         editBtn.title =
             "You are already editing — use Exit when done, or expand Create below.";
-    } else if (isAnimating) {
+    } else if (isFoldOrPlaybackBusy()) {
         editBtn.title = "Wait for folding or unfolding to finish.";
     } else {
         editBtn.title = "Load a preset, a JSON file, or build a net first.";
     }
 }
 
-/** Fold / trial fold when the net has at least one flap connection. */
+function isFoldOrPlaybackBusy() {
+    return Boolean(foldPlaybackActive || isAnimating);
+}
+
+/** Fold transport + playhead when the net has at least one flap connection. */
 function refreshFoldControlState() {
     try {
-        if (!foldButton) return;
+        if (!foldPlayPause) return;
         const hasNet = Boolean(f1Mesh);
         const canFoldOrTrial =
-            Boolean(currentFoldAngles) || canTrialFoldLayout();
+            hasLibraryFoldSupport() || canTrialFoldLayout();
+        const busy = isFoldOrPlaybackBusy();
         const instantTitleWhenReady =
             "Jump to the fully folded shape in one step (no hinge animation).";
         const setInstantFoldUi = (disabled, title) => {
@@ -2318,61 +4993,76 @@ function refreshFoldControlState() {
             instantFoldButton.disabled = disabled;
             instantFoldButton.title = title;
         };
+        const setTransportDisabled = (v) => {
+            foldJumpToStart?.toggleAttribute("disabled", v);
+            foldSkipBack?.toggleAttribute("disabled", v);
+            foldSkipForward?.toggleAttribute("disabled", v);
+            foldPlayReverse?.toggleAttribute("disabled", v);
+            foldPlayheadSlider?.toggleAttribute("disabled", v);
+        };
         if (!hasNet) {
-            foldButton.disabled = true;
-            foldButton.title =
+            foldPlayPause.disabled = true;
+            setFoldPlayPauseGlyph(false);
+            foldPlayPause.title =
                 "Load a preset, a JSON file, or create a net from the Net panel.";
-            foldButton.textContent = "Animated Fold";
+            setTransportDisabled(true);
             setInstantFoldUi(true, "");
+            if (foldPlayheadLabel) foldPlayheadLabel.textContent = "—";
             return;
         }
         if (!canFoldOrTrial) {
-            foldButton.disabled = true;
-            foldButton.title =
+            foldPlayPause.disabled = true;
+            setFoldPlayPauseGlyph(false);
+            foldPlayPause.title =
                 "Add attached faces in the builder (or load a net with connections) to try folding.";
-            foldButton.textContent = "Animated Fold";
+            setTransportDisabled(true);
+            setInstantFoldUi(true, "");
+            return;
+        }
+        if (NUM_ANIMATION_STAGES < 1) {
+            foldPlayPause.disabled = true;
+            setTransportDisabled(true);
             setInstantFoldUi(true, "");
             return;
         }
         if (trialFoldPauseActive) {
-            foldButton.disabled = false;
-            foldButton.textContent = "Unfold";
-            foldButton.title =
-                "Return to the flat net (guessed fold didn’t match any known solid).";
-            if (pauseButton) pauseButton.disabled = true;
+            foldPlayPause.disabled = true;
+            setFoldPlayPauseGlyph(false);
+            foldPlayReverse?.setAttribute("disabled", "true");
+            foldSkipForward?.setAttribute("disabled", "true");
+            foldJumpToStart?.removeAttribute("disabled");
+            foldSkipBack?.removeAttribute("disabled");
+            foldPlayheadSlider?.removeAttribute("disabled");
+            foldPlayPause.title =
+                "Trial fold finished — drag the playhead left or skip back to flatten.";
             setInstantFoldUi(
                 true,
-                "Not available during trial pause — use Unfold first.",
+                "Not available during trial pause — drag Fold toward flat first.",
             );
             return;
         }
-        foldButton.disabled = false;
-        foldButton.title = canTrialFoldLayout()
-            ? "Animated trial fold: guessed angles for every hinge; when it stops, click Unfold to flatten (no fold table for this layout)."
-            : "";
-        const foldingForward =
-            isAnimating &&
-            currentAnimationStage > 0 &&
-            currentAnimationStage <= NUM_ANIMATION_STAGES;
-        const unfoldingAnim = isAnimating && currentAnimationStage < 0;
-        let showUnfoldLabel = isFolded;
-        if (foldingForward) showUnfoldLabel = true;
-        if (unfoldingAnim) showUnfoldLabel = false;
-        foldButton.textContent = showUnfoldLabel ? "Unfold" : "Animated Fold";
+        foldPlayPause.disabled = false;
+        foldPlayPause.title = foldPlaybackActive
+            ? "Pause folding animation"
+            : "Play folding animation forward";
+        foldPlayheadSlider?.removeAttribute("disabled");
+        foldJumpToStart?.removeAttribute("disabled");
+        foldSkipBack?.removeAttribute("disabled");
+        foldSkipForward?.removeAttribute("disabled");
+        foldPlayReverse?.removeAttribute("disabled");
 
-        const allowInstant =
-            !isAnimating && !isFolded;
+        const allowInstant = !busy && !isFolded;
         if (allowInstant) {
             setInstantFoldUi(false, instantTitleWhenReady);
         } else if (isFolded) {
             setInstantFoldUi(
                 true,
-                "Already folded. Use Unfold to return to the flat net.",
+                "Already folded. Drag the playhead left or play in reverse to open.",
             );
         } else {
             setInstantFoldUi(
                 true,
-                "Wait for the current animation to finish or press Pause.",
+                "Wait for playback to finish or press Pause.",
             );
         }
     } finally {
@@ -2407,7 +5097,7 @@ function refreshStellationSectionState() {
 
     const hasNet = Boolean(f1Mesh);
     const folded = isFolded;
-    const busy = isAnimating;
+    const busy = isFoldOrPlaybackBusy();
     const unlock = hasNet && folded && !busy;
 
     const stellationPolyKey =
@@ -2503,6 +5193,7 @@ function refreshStellationSectionState() {
         stellDiagramSelectedKeys.clear();
         stellDiagramPickState = null;
         stellDiagramPointerInside = false;
+        stellDiagramHoverCentroidKey = null;
         stellDiagramViewZoom = 1;
         stellDiagramViewPanU = 0;
         stellDiagramViewPanV = 0;
@@ -2521,6 +5212,12 @@ function refreshStellationSectionState() {
         refreshStellationCapHeightLabel();
         rebuildStellationUniformCapsIfNeeded();
     } else disposeStellationCaps();
+
+    const opaqueRow = document.getElementById("opaqueStellationsRow");
+    if (opaqueRow) {
+        const stellationModeOn = unlock && selVal !== "off";
+        opaqueRow.hidden = !stellationModeOn;
+    }
 }
 
 function refreshStellationCapHeightLabel() {
@@ -2618,7 +5315,7 @@ function rebuildStellationUniformCapsIfNeeded() {
     if (
         sel !== "uniform-caps" ||
         !isFolded ||
-        isAnimating ||
+        isFoldOrPlaybackBusy() ||
         !scene ||
         !f1Mesh
     ) {
@@ -3311,7 +6008,7 @@ function rebuildStellationDiagramSelection3D() {
     if (
         !st ||
         !isFolded ||
-        isAnimating ||
+        isFoldOrPlaybackBusy() ||
         !scene ||
         stellDiagramSelectedKeys.size === 0 ||
         !st.regions?.length
@@ -3467,6 +6164,14 @@ function onStellationDiagramCanvasWheel(ev) {
     const s1 = st.scale * z1;
     stellDiagramViewPanU = u0 - st.cx - (ox - wCss / 2) / s1;
     stellDiagramViewPanV = v0 - st.cy + (oy - wCss / 2) / s1;
+    if (stellDiagramPointerInside) {
+        const hitZ = stellDiagramHitRegionAtClient(
+            canvas,
+            stellDiagramLastPointerClientX,
+            stellDiagramLastPointerClientY,
+        );
+        stellDiagramHoverCentroidKey = hitZ?.centroidKey ?? null;
+    }
     redrawStellationDiagram();
 }
 
@@ -3554,6 +6259,15 @@ function onStellationDiagramCanvasPointerMove(ev) {
             stellDiagramViewPanV += dOy / s;
             stellDiagramPanLastCssX = ev.clientX;
             stellDiagramPanLastCssY = ev.clientY;
+            const hitPan = stellDiagramHitRegionAtClient(
+                canvas,
+                ev.clientX,
+                ev.clientY,
+            );
+            const nkPan = hitPan?.centroidKey ?? null;
+            if (nkPan !== stellDiagramHoverCentroidKey) {
+                stellDiagramHoverCentroidKey = nkPan;
+            }
             redrawStellationDiagram();
         }
         return;
@@ -3561,12 +6275,26 @@ function onStellationDiagramCanvasPointerMove(ev) {
     stellDiagramPointerInside = true;
     stellDiagramLastPointerClientX = ev.clientX;
     stellDiagramLastPointerClientY = ev.clientY;
+    const hit = stellDiagramHitRegionAtClient(
+        canvas,
+        ev.clientX,
+        ev.clientY,
+    );
+    const nk = hit?.centroidKey ?? null;
+    if (nk !== stellDiagramHoverCentroidKey) {
+        stellDiagramHoverCentroidKey = nk;
+        redrawStellationDiagram();
+    }
     refreshStellationDiagramCanvasCursor();
 }
 
 function onStellationDiagramCanvasPointerLeave() {
     const canvas = document.getElementById("stellationDiagramCanvas");
     if (!stellDiagramPanActive) stellDiagramPointerInside = false;
+    if (!stellDiagramPanActive && stellDiagramHoverCentroidKey != null) {
+        stellDiagramHoverCentroidKey = null;
+        redrawStellationDiagram();
+    }
     if (canvas && !stellDiagramPanActive) canvas.style.cursor = "";
 }
 
@@ -3619,6 +6347,7 @@ function redrawStellationDiagram() {
         stellDiagramViewPanU = 0;
         stellDiagramViewPanV = 0;
         stellDiagramViewLastPolyKey = polyKey;
+        stellDiagramHoverCentroidKey = null;
     }
 
     const expectedSides =
@@ -3719,9 +6448,6 @@ function redrawStellationDiagram() {
     if (stellDiagramSelectedKeys.size > 0)
         stellRemapDiagramSelectionToNewRegions(diagramRegions);
 
-    const root = document.documentElement;
-    const cs = getComputedStyle(root);
-    const stroke = (cs.getPropertyValue("--text-muted") || "#888").trim();
     const pad = 14;
     let minX = Infinity;
     let minY = Infinity;
@@ -3762,12 +6488,10 @@ function redrawStellationDiagram() {
     ctx.scale(sDraw, -sDraw);
     ctx.translate(-cx - stellDiagramViewPanU, -cy - stellDiagramViewPanV);
 
-    const accent =
-        (cs.getPropertyValue("--text") || "#ccc").trim() || "#ccc";
     for (const r of diagramRegions) {
         if (!stellDiagramSelectedKeys.has(r.centroidKey)) continue;
-        ctx.fillStyle = accent;
-        ctx.globalAlpha = 0.2;
+        ctx.fillStyle = STELL_DIAGRAM_SELECTED_FILL;
+        ctx.globalAlpha = 1;
         ctx.beginPath();
         for (let i = 0; i < r.verts.length; i++) {
             const p = r.verts[i];
@@ -3779,8 +6503,8 @@ function redrawStellationDiagram() {
     }
     ctx.globalAlpha = 1;
 
-    ctx.fillStyle = stroke;
-    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = STELL_DIAGRAM_LINE;
+    ctx.globalAlpha = 0.14;
     ctx.beginPath();
     for (let i = 0; i < poly2d.length; i++) {
         const p = poly2d[i];
@@ -3791,7 +6515,7 @@ function redrawStellationDiagram() {
     ctx.fill();
     ctx.globalAlpha = 1;
 
-    ctx.strokeStyle = stroke;
+    ctx.strokeStyle = STELL_DIAGRAM_LINE;
     /* lineWidth in (u,v) units; thinner strokes for a lighter diagram look */
     ctx.lineWidth = Math.max(0.65 / sDraw, 0.45 / sDraw);
     ctx.beginPath();
@@ -3803,7 +6527,8 @@ function redrawStellationDiagram() {
     ctx.closePath();
     ctx.stroke();
 
-    ctx.globalAlpha = 0.88;
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = STELL_DIAGRAM_LINE;
     ctx.lineWidth = Math.max(1.05 / sDraw, 0.75 / sDraw);
     for (const s of segments) {
         ctx.beginPath();
@@ -3812,6 +6537,37 @@ function redrawStellationDiagram() {
         ctx.stroke();
     }
     ctx.globalAlpha = 1;
+
+    const lwHover = Math.max(1.15 / sDraw, 0.85 / sDraw);
+    const lwSel = Math.max(1.35 / sDraw, 1.0 / sDraw);
+    for (const r of diagramRegions) {
+        const sel = stellDiagramSelectedKeys.has(r.centroidKey);
+        const hov = r.centroidKey === stellDiagramHoverCentroidKey;
+        if (!sel && hov) {
+            ctx.strokeStyle = STELL_DIAGRAM_HOVER_STROKE;
+            ctx.lineWidth = lwHover;
+            ctx.beginPath();
+            for (let i = 0; i < r.verts.length; i++) {
+                const p = r.verts[i];
+                if (i === 0) ctx.moveTo(p.u, p.v);
+                else ctx.lineTo(p.u, p.v);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+        if (sel) {
+            ctx.strokeStyle = STELL_DIAGRAM_SELECTED_STROKE;
+            ctx.lineWidth = lwSel;
+            ctx.beginPath();
+            for (let i = 0; i < r.verts.length; i++) {
+                const p = r.verts[i];
+                if (i === 0) ctx.moveTo(p.u, p.v);
+                else ctx.lineTo(p.u, p.v);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
 
     stellDiagramPickState = {
         displayCss: w,
@@ -4049,6 +6805,368 @@ function unfoldFlipFlapIfOverlappingParent(
     }
 }
 
+/** Planar UVs in XZ so each face maps the full swatch (per-face “sample card”). */
+function applyFacePlanarUvsFromGeometry(geometry) {
+    const pos = geometry.attributes.position;
+    if (!pos) return;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+    }
+    const dx = maxX - minX || 1;
+    const dz = maxZ - minZ || 1;
+    const uvs = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+        uvs[i * 2] = (pos.getX(i) - minX) / dx;
+        uvs[i * 2 + 1] = (pos.getZ(i) - minZ) / dz;
+    }
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+}
+
+function usesNetAtlasUvs() {
+    return currentFaceTextureSetId === "clothAtlas";
+}
+
+/** World XZ bounds of the flat net (all {@link allVertices} rings) for one-piece cloth UVs. */
+function computeNetFlatUvBounds() {
+    const b = {
+        minX: Infinity,
+        maxX: -Infinity,
+        minZ: Infinity,
+        maxZ: -Infinity,
+    };
+    for (const key of Object.keys(allVertices)) {
+        const ring = allVertices[key];
+        if (!ring?.length) continue;
+        const n = ring.numSides ?? ring.length;
+        for (let i = 0; i < n; i++) {
+            const p = ring[i];
+            if (!(p instanceof THREE.Vector3)) continue;
+            b.minX = Math.min(b.minX, p.x);
+            b.maxX = Math.max(b.maxX, p.x);
+            b.minZ = Math.min(b.minZ, p.z);
+            b.maxZ = Math.max(b.maxZ, p.z);
+        }
+    }
+    const dx = b.maxX - b.minX || 1;
+    const dz = b.maxZ - b.minZ || 1;
+    return { minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, dx, dz };
+}
+
+/**
+ * Map flat-net world XZ into shared 0–1 UV (same layout as {@link createRegularPolygonGeometry}).
+ * @param {THREE.BufferGeometry} geometry
+ * @param {THREE.Vector3[]} verticesWorld polygon ring in unfolded world space
+ * @param {{minX:number,maxX:number,minZ:number,maxZ:number,dx:number,dz:number}} bounds
+ */
+function applyNetAtlasUvsToGeometry(geometry, verticesWorld, bounds) {
+    if (!geometry?.attributes?.position || !verticesWorld?.length || !bounds)
+        return;
+    const numSides = verticesWorld.length;
+    const pushUv = (p, uvs) => {
+        uvs.push(
+            (p.x - bounds.minX) / bounds.dx,
+            (p.z - bounds.minZ) / bounds.dz,
+        );
+    };
+    const uvs = [];
+    if (verticesWorld.isStarPolygon) {
+        const O = calculateLocalCenter(verticesWorld);
+        for (let i = 0; i < numSides; i++) {
+            pushUv(O, uvs);
+            pushUv(verticesWorld[(i + 1) % numSides], uvs);
+            pushUv(verticesWorld[i], uvs);
+        }
+    } else {
+        const v0 = verticesWorld[0];
+        for (let i = 1; i <= numSides - 2; i++) {
+            pushUv(v0, uvs);
+            pushUv(verticesWorld[i + 1], uvs);
+            pushUv(verticesWorld[i], uvs);
+        }
+    }
+    const arr = new Float32Array(uvs);
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(arr, 2));
+    geometry.attributes.uv.needsUpdate = true;
+}
+
+/** Per-face planar vs whole-net atlas, matching {@link currentFaceTextureSetId}. */
+function refreshAllFaceMeshUvs() {
+    if (!f1Mesh) return;
+    const atlas = usesNetAtlasUvs();
+    const bounds = atlas ? computeNetFlatUvBounds() : null;
+    forEachFaceMesh((mesh) => {
+        const fid = mesh.userData.faceId;
+        const wv = allVertices[fid];
+        const geom = mesh.geometry;
+        if (!geom || !wv?.length) return;
+        if (atlas) applyNetAtlasUvsToGeometry(geom, wv, bounds);
+        else applyFacePlanarUvsFromGeometry(geom);
+    });
+}
+
+/**
+ * Muted, matte organic swatch (canvas) — placeholder until real dye scans live under /textures/dye/.
+ * @param {number} sideCount 3–12
+ */
+function makeProceduralWashiTextureForSide(sideCount) {
+    const k = Math.min(Math.max(Math.round(sideCount), 3), 12);
+    const hue = ((k * 31) % 72) + 18;
+    const sat = 22 + (k % 5) * 4;
+    const lightBase = 48 + (k % 4) * 5;
+    const canvas = document.createElement("canvas");
+    const sz = 256;
+    canvas.width = sz;
+    canvas.height = sz;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = `hsl(${hue},${sat}%,${lightBase}%)`;
+    ctx.fillRect(0, 0, sz, sz);
+    for (let pass = 0; pass < 3; pass++) {
+        ctx.globalAlpha = 0.04 + pass * 0.02;
+        for (let n = 0; n < 1200; n++) {
+            const x = Math.random() * sz;
+            const y = Math.random() * sz;
+            const w = 1 + Math.random() * 2;
+            ctx.fillStyle = pass % 2 === 0 ? "#1a1410" : "#f5f0e8";
+            ctx.fillRect(x, y, w, w);
+        }
+    }
+    ctx.globalAlpha = 1;
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(1, 1);
+    if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.userData.sharedDyeTexture = true;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+/** Cool indigo / cream procedural atlas (pairs with shibori for “two cloths”). */
+function makeProceduralClothAtlasIndigoWash() {
+    const sz = 512;
+    const canvas = document.createElement("canvas");
+    canvas.width = sz;
+    canvas.height = sz;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const g = ctx.createLinearGradient(sz, 0, 0, sz);
+    g.addColorStop(0, "#2a3350");
+    g.addColorStop(0.35, "#4a5680");
+    g.addColorStop(0.55, "#e8e4dc");
+    g.addColorStop(0.72, "#3d4a6e");
+    g.addColorStop(1, "#1e2438");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, sz, sz);
+    for (let band = 0; band < 18; band++) {
+        const x = (band / 18) * sz;
+        ctx.strokeStyle = `rgba(255,252,245,${0.04 + (band % 4) * 0.015})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.sin(band) * 3, 0);
+        ctx.lineTo(x + Math.cos(band * 0.6) * 5, sz);
+        ctx.stroke();
+    }
+    for (let n = 0; n < 6000; n++) {
+        ctx.fillStyle =
+            Math.random() > 0.5 ? "rgba(8,12,24,0.05)" : "rgba(255,250,248,0.025)";
+        ctx.fillRect(Math.random() * sz, Math.random() * sz, 1.5, 1.5);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.userData.sharedDyeTexture = true;
+    tex.userData.clothAtlasProcedural = true;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+function makeProceduralClothForRegistryEntry(entry) {
+    if (!entry || entry.kind !== "procedural") return null;
+    if (entry.variant === "indigo") return makeProceduralClothAtlasIndigoWash();
+    return makeProceduralClothAtlasTexture();
+}
+
+/** Single large swatch for atlas UVs (one “cloth” across the whole flat net). */
+function makeProceduralClothAtlasTexture() {
+    const sz = 512;
+    const canvas = document.createElement("canvas");
+    canvas.width = sz;
+    canvas.height = sz;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const g = ctx.createLinearGradient(0, 0, sz, sz * 0.85);
+    g.addColorStop(0, "#3d4555");
+    g.addColorStop(0.22, "#7d6a8a");
+    g.addColorStop(0.48, "#5a6278");
+    g.addColorStop(0.72, "#8b7898");
+    g.addColorStop(1, "#4a3d52");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, sz, sz);
+    for (let band = 0; band < 14; band++) {
+        const y = (band / 14) * sz;
+        ctx.strokeStyle = `rgba(20,18,28,${0.06 + (band % 3) * 0.02})`;
+        ctx.lineWidth = 3 + (band % 4);
+        ctx.beginPath();
+        ctx.moveTo(0, y + Math.sin(band) * 4);
+        ctx.lineTo(sz, y + Math.cos(band * 0.7) * 6);
+        ctx.stroke();
+    }
+    for (let r = 0; r < 55; r++) {
+        const cx = Math.random() * sz;
+        const cy = Math.random() * sz;
+        const rad = 12 + Math.random() * 90;
+        ctx.strokeStyle = `rgba(255,250,245,${0.025 + Math.random() * 0.035})`;
+        ctx.lineWidth = 1.5 + Math.random() * 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    for (let n = 0; n < 8000; n++) {
+        ctx.fillStyle =
+            Math.random() > 0.5 ? "rgba(12,10,18,0.04)" : "rgba(248,242,255,0.03)";
+        ctx.fillRect(Math.random() * sz, Math.random() * sz, 1.5, 1.5);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.userData.sharedDyeTexture = true;
+    tex.userData.clothAtlasProcedural = true;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+function clothAtlasFinishPendingFileLoad() {
+    clothAtlasPendingFileLoads = Math.max(0, clothAtlasPendingFileLoads - 1);
+    if (
+        clothAtlasPendingFileLoads <= 0 &&
+        currentFaceTextureSetId === "clothAtlas" &&
+        f1Mesh
+    )
+        refreshAllFaceDisplayColors();
+}
+
+function loadClothFileIntoCache(entry, cacheKey) {
+    if (!entry?.path) return;
+    if (proceduralDyeTextureCache.has(cacheKey)) return;
+    clothAtlasPendingFileLoads++;
+    const loader = new THREE.TextureLoader();
+    loader.load(
+        entry.path,
+        (tex) => {
+            if (currentFaceTextureSetId !== "clothAtlas") {
+                tex.dispose();
+                clothAtlasFinishPendingFileLoad();
+                return;
+            }
+            tex.wrapS = THREE.ClampToEdgeWrapping;
+            tex.wrapT = THREE.ClampToEdgeWrapping;
+            if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+            tex.userData.sharedDyeTexture = true;
+            tex.userData.fromClothImageFile = true;
+            if (renderer) {
+                const maxA = renderer.capabilities.getMaxAnisotropy();
+                tex.anisotropy = Math.min(8, maxA);
+            }
+            tex.needsUpdate = true;
+            proceduralDyeTextureCache.set(cacheKey, tex);
+            clothAtlasFinishPendingFileLoad();
+        },
+        undefined,
+        () => {
+            console.warn(
+                `[01-FOLD] Cloth file failed to load (${entry.path}); using procedural fallback.`,
+            );
+            if (currentFaceTextureSetId === "clothAtlas") {
+                const fb = makeProceduralClothAtlasTexture();
+                if (fb) proceduralDyeTextureCache.set(cacheKey, fb);
+            }
+            clothAtlasFinishPendingFileLoad();
+        },
+    );
+}
+
+/** Ensures all cloth entries needed for the current pattern are cached or loading. */
+function ensureClothAtlasTexturesLoaded() {
+    if (currentFaceTextureSetId !== "clothAtlas") return;
+    const ids = clothEntryIdsNeededForCurrentPattern();
+    const unique = [...new Set(ids)];
+    for (const entryId of unique) {
+        const entry = getClothRegistryEntry(entryId);
+        const key = clothTextureCacheKey(entry.id);
+        if (proceduralDyeTextureCache.has(key)) continue;
+        if (entry.kind === "procedural") {
+            const tex = makeProceduralClothForRegistryEntry(entry);
+            if (tex) proceduralDyeTextureCache.set(key, tex);
+            continue;
+        }
+        if (entry.kind === "file") {
+            loadClothFileIntoCache(entry, key);
+        }
+    }
+}
+
+function getSharedDiffuseMapForFace(faceId, numSides) {
+    if (currentFaceTextureSetId === "clothAtlas") {
+        const eid = clothEntryIdForFace(faceId);
+        const key = clothTextureCacheKey(eid);
+        const tex = proceduralDyeTextureCache.get(key);
+        if (tex) return tex;
+        ensureClothAtlasTexturesLoaded();
+        return null;
+    }
+    if (currentFaceTextureSetId === "washiSamples") {
+        const k = Math.min(Math.max(Math.round(numSides), 3), 12);
+        const key = `washi:${k}`;
+        let tex = proceduralDyeTextureCache.get(key);
+        if (!tex) {
+            tex = makeProceduralWashiTextureForSide(k);
+            if (tex) proceduralDyeTextureCache.set(key, tex);
+        }
+        return tex ?? null;
+    }
+    if (currentFaceTextureSetId === "none" && isSwatchDyePaletteSelected()) {
+        return getSwatchDyeDiffuseMap(faceId);
+    }
+    return null;
+}
+
+function buildFaceMaterial(colorHex, mode, numSides, faceId) {
+    const fid = faceId ?? 1;
+    const map = getSharedDiffuseMapForFace(fid, numSides);
+    let effectiveHex = colorHex;
+    if (currentFaceTextureSetId === "clothAtlas") {
+        if (currentClothAtlasPattern === "alternateTint") {
+            effectiveHex =
+                fid % 2 === 1
+                    ? parseColor(currentClothAtlasTintHexA)
+                    : parseColor(currentClothAtlasTintHexB);
+        } else if (
+            map &&
+            (map.userData?.fromClothImageFile ||
+                map.userData?.clothAtlasProcedural)
+        ) {
+            effectiveHex = 0xffffff;
+        }
+    } else if (map?.userData?.swatchDyeTexture) {
+        effectiveHex = 0xffffff;
+    } else if (map?.userData?.fromClothImageFile) {
+        effectiveHex = 0xffffff;
+    }
+    return createFaceMaterial(effectiveHex, mode, map);
+}
+
 /**
  * Triangle mesh for a simple polygon ring. Convex n-gons use a fan from v0.
  * Schläfli star polygons ({@link vertices.isStarPolygon}) self-intersect; fan from v0
@@ -4085,6 +7203,7 @@ function createRegularPolygonGeometry(vertices) {
         new THREE.Float32BufferAttribute(positions, 3),
     );
     geometry.computeVertexNormals();
+    applyFacePlanarUvsFromGeometry(geometry);
     return geometry;
 }
 
@@ -4094,8 +7213,12 @@ function disposeObjectTree(obj) {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {
             const m = o.material;
-            if (Array.isArray(m)) m.forEach((x) => x.dispose());
-            else m.dispose();
+            const list = Array.isArray(m) ? m : [m];
+            list.forEach((mat) => {
+                if (mat.map && mat.map.userData?.sharedDyeTexture)
+                    mat.map = null;
+                mat.dispose();
+            });
         }
     });
 }
@@ -4196,14 +7319,505 @@ function forEachFaceMesh(fn) {
     });
 }
 
+function getColorInputForFaceId(fid, netDataOverride) {
+    const data =
+        netDataOverride ??
+        (isNetBuilderActive && builderNetData
+            ? builderNetData
+            : lastLoadedNetData);
+    if (!data) return "#ffffff";
+    if (fid === 1) return data.baseFace?.color ?? "#ffffff";
+    const conns = data.connections || [];
+    for (let c = 0; c < conns.length; c++) {
+        if (Number(conns[c].from) === fid)
+            return conns[c].color ?? "#ffffff";
+    }
+    return "#ffffff";
+}
+
+/** Reapply resolveDisplayColorHex after dye palette or color-by-sides changes (no full net rebuild). */
+function refreshAllFaceDisplayColors() {
+    if (!f1Mesh) return;
+    const mode = RENDER_MODES[currentRenderModeIndex];
+    forEachFaceMesh((mesh) => {
+        const fid = mesh.userData.faceId;
+        const verts = allVertices[fid];
+        const n = verts?.numSides ?? 3;
+        const hex = resolveFaceDisplayColorHex(fid, n);
+        mesh.userData.faceColorHex = hex;
+        disposeFaceMeshMaterial(mesh);
+        mesh.material = buildFaceMaterial(hex, mode, n, fid);
+    });
+    refreshBuilderFaceSelectionHighlight();
+    updateEdgeLinesForRenderMode();
+    rebuildStellationUniformCapsIfNeeded();
+    rebuildStellationDiagramSelection3D();
+    refreshAllFaceMeshUvs();
+}
+
+function hideFaceHexContextMenu() {
+    const el = document.getElementById("faceHexContextMenu");
+    if (el) el.hidden = true;
+    faceHexContextMenuTargetFaceId = null;
+    const sw = document.getElementById("faceHexContextMenuSwatches");
+    const clr = document.getElementById("faceHexContextMenuClear");
+    const fb = document.getElementById("faceHexContextMenuFoldBlock");
+    if (sw) sw.hidden = false;
+    if (clr) clr.hidden = false;
+    if (fb) fb.hidden = true;
+}
+
+function populateFaceHexContextMenuSwatches() {
+    const wrap = document.getElementById("faceHexContextMenuSwatches");
+    if (!wrap) return;
+    wrap.replaceChildren();
+    if (isSwatchDyePaletteSelected()) {
+        const pal = getActiveSwatchPaletteDef();
+        if (!pal?.swatches?.length) return;
+        for (const s of pal.swatches) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "face-hex-swatch face-swatch-dye";
+            btn.title = s.label;
+            btn.dataset.swatchId = s.id;
+            btn.style.backgroundColor = "#e8e4dc";
+            btn.style.backgroundImage = `url("${s.path}")`;
+            btn.style.backgroundSize = "cover";
+            btn.style.backgroundPosition = "center";
+            btn.setAttribute(
+                "aria-label",
+                `Paint face with swatch: ${s.label}`,
+            );
+            wrap.appendChild(btn);
+        }
+        return;
+    }
+    const map = getActivePolygonSideColorMap();
+    for (let n = 3; n <= 12; n++) {
+        const css = map[n] ?? colorCssForPolygonSides(n);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "face-hex-swatch";
+        btn.title = `${n}-gon · ${currentDyePaletteId}`;
+        btn.style.backgroundColor = css;
+        btn.dataset.overrideHex = css;
+        btn.setAttribute(
+            "aria-label",
+            `Override with ${n}-gon color from current dye palette`,
+        );
+        wrap.appendChild(btn);
+    }
+}
+
+function showFaceHexContextMenu(clientX, clientY, faceId) {
+    const el = document.getElementById("faceHexContextMenu");
+    const title = document.getElementById("faceHexContextMenuTitle");
+    const foldBlock = document.getElementById("faceHexContextMenuFoldBlock");
+    const swatches = document.getElementById("faceHexContextMenuSwatches");
+    const clearBtn = document.getElementById("faceHexContextMenuClear");
+    const flipBtn = document.getElementById("faceHexContextMenuFlipHinge");
+    if (!el) return;
+    faceHexContextMenuTargetFaceId = faceId;
+    const foldChallengeUi =
+        isFoldDirectionChallengeActive() && isFoldDirectionChallengeEligible();
+    if (foldChallengeUi && lastLoadedNetData) {
+        el.setAttribute("aria-label", "Fold hinge direction");
+        const conn = findFoldConnectionForFaceId(lastLoadedNetData, faceId);
+        if (title) {
+            if (faceId < 2) {
+                title.textContent = `Face F${faceId} — base (no hinge to flip)`;
+            } else if (!conn) {
+                title.textContent = `Face F${faceId} — no hinge row (from)`;
+            } else {
+                const deg = (conn.foldAngleRad * 180) / Math.PI;
+                title.textContent = `Face F${faceId} — hinge · ${deg.toFixed(2)}° (foldAngleRad)`;
+            }
+        }
+        if (swatches) swatches.hidden = true;
+        if (clearBtn) clearBtn.hidden = true;
+        if (foldBlock) foldBlock.hidden = false;
+        if (flipBtn) {
+            const canFlip = faceId >= 2 && Boolean(conn);
+            flipBtn.disabled = !canFlip;
+        }
+    } else {
+        el.setAttribute("aria-label", "Face color override");
+        if (foldBlock) foldBlock.hidden = true;
+        if (swatches) swatches.hidden = false;
+        if (clearBtn) clearBtn.hidden = false;
+        if (flipBtn) flipBtn.disabled = true;
+        if (title) {
+            title.textContent = isSwatchDyePaletteSelected()
+                ? `Face F${faceId} — dye swatch`
+                : `Face F${faceId} — override color`;
+        }
+        populateFaceHexContextMenuSwatches();
+    }
+    el.hidden = false;
+    el.style.visibility = "hidden";
+    el.style.left = "0px";
+    el.style.top = "0px";
+    const r = el.getBoundingClientRect();
+    el.style.visibility = "visible";
+    const pad = 8;
+    const x = Math.min(
+        Math.max(pad, clientX),
+        window.innerWidth - r.width - pad,
+    );
+    const y = Math.min(
+        Math.max(pad, clientY),
+        window.innerHeight - r.height - pad,
+    );
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+}
+
+function wireFaceHexContextMenu() {
+    const wrap = document.getElementById("faceHexContextMenuSwatches");
+    const clearBtn = document.getElementById("faceHexContextMenuClear");
+    wrap?.addEventListener("click", (e) => {
+        const btn = e.target.closest(".face-hex-swatch");
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const fid = faceHexContextMenuTargetFaceId;
+        if (fid == null || !f1Mesh) return;
+        const swId = btn.dataset.swatchId;
+        if (swId) {
+            if (!isSwatchDyePaletteSelected()) return;
+            const pal = getActiveSwatchPaletteDef();
+            const norm = normalizeSwatchIdForPalette(swId, pal);
+            if (!norm) return;
+            faceHexOverrideByFaceId.delete(fid);
+            faceSwatchByFaceId.set(fid, norm);
+            saveFaceHexOverridesToStorage();
+            saveFaceSwatchAssignToStorage();
+            hideFaceHexContextMenu();
+            refreshAllFaceDisplayColors();
+            syncAppearanceCustomRowUi();
+            return;
+        }
+        if (!btn.dataset.overrideHex) return;
+        faceHexOverrideByFaceId.set(fid, btn.dataset.overrideHex);
+        saveFaceHexOverridesToStorage();
+        hideFaceHexContextMenu();
+        refreshAllFaceDisplayColors();
+        syncAppearanceCustomRowUi();
+    });
+    clearBtn?.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const fid = faceHexContextMenuTargetFaceId;
+        if (fid == null || !f1Mesh) return;
+        faceHexOverrideByFaceId.delete(fid);
+        if (isSwatchDyePaletteSelected()) {
+            faceSwatchByFaceId.delete(fid);
+            saveFaceSwatchAssignToStorage();
+        }
+        saveFaceHexOverridesToStorage();
+        hideFaceHexContextMenu();
+        refreshAllFaceDisplayColors();
+        syncAppearanceCustomRowUi();
+    });
+    document.getElementById("faceHexContextMenuFlipHinge")?.addEventListener(
+        "click",
+        (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const fid = faceHexContextMenuTargetFaceId;
+            if (fid == null || fid < 2 || !isFoldDirectionChallengeEligible())
+                return;
+            flipConnectionFoldAngleForFace(fid);
+            hideFaceHexContextMenu();
+        },
+    );
+    document.addEventListener(
+        "mousedown",
+        (e) => {
+            const menu = document.getElementById("faceHexContextMenu");
+            if (!menu || menu.hidden) return;
+            if (menu.contains(e.target)) return;
+            hideFaceHexContextMenu();
+        },
+        true,
+    );
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideFaceHexContextMenu();
+    });
+}
+
+function fillClothAtlasRegistrySelect(el) {
+    if (!el) return;
+    el.innerHTML = "";
+    for (const row of CLOTH_ATLAS_REGISTRY) {
+        const opt = document.createElement("option");
+        opt.value = row.id;
+        opt.textContent = row.label;
+        el.appendChild(opt);
+    }
+}
+
+function clearClothAtlasTextureCacheOnly() {
+    const keys = [];
+    proceduralDyeTextureCache.forEach((_tex, key) => {
+        if (String(key).startsWith("cloth:")) keys.push(key);
+    });
+    for (const key of keys) {
+        const tex = proceduralDyeTextureCache.get(key);
+        proceduralDyeTextureCache.delete(key);
+        try {
+            tex?.dispose();
+        } catch (e) {
+            /* ignore */
+        }
+    }
+    clothAtlasPendingFileLoads = 0;
+}
+
+function bumpClothAtlasTexturesAndRefreshFaces() {
+    clearClothAtlasTextureCacheOnly();
+    ensureClothAtlasTexturesLoaded();
+    refreshAllFaceDisplayColors();
+}
+
+function syncAppearanceCustomRowUi() {
+    const row = document.getElementById("appearanceCustomRow");
+    const countEl = document.getElementById("appearanceCustomCount");
+    const n = faceHexOverrideByFaceId?.size ?? 0;
+    if (row) row.hidden = n === 0;
+    if (countEl) countEl.textContent = n ? String(n) : "";
+}
+
+function syncAppearanceModeSegmentedUi() {
+    const buttons = document.querySelectorAll("[data-appearance-mode]");
+    for (const btn of buttons) {
+        const m = btn.getAttribute("data-appearance-mode");
+        const on = m === currentAppearanceMode;
+        btn.classList.toggle("net-export-main-btn--open", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+}
+
+function syncAppearanceTexturePanelUi() {
+    const panel = document.getElementById("appearanceTexturePanel");
+    const kindSel = document.getElementById("appearanceTextureKindSelect");
+    const show = currentAppearanceMode === "texture";
+    if (panel) panel.hidden = !show;
+    if (kindSel) {
+        kindSel.value =
+            currentFaceTextureSetId === "clothAtlas"
+                ? "clothAtlas"
+                : "washiSamples";
+    }
+}
+
+function applyFaceTextureSetId(v, meta = {}) {
+    if (!v || !FACE_TEXTURE_SET_IDS.includes(v)) return;
+    if (v === currentFaceTextureSetId && !meta.force) {
+        syncClothAtlasAppearanceUi();
+        syncAppearanceTexturePanelUi();
+        syncSwatchPaletteAppearanceUi();
+        return;
+    }
+    const prevTextures = [...proceduralDyeTextureCache.values()];
+    proceduralDyeTextureCache.clear();
+    clothAtlasPendingFileLoads = 0;
+    currentFaceTextureSetId = v;
+    if (!meta.skipStorage) {
+        try {
+            localStorage.setItem(FACE_TEXTURE_SET_STORAGE_KEY, v);
+        } catch (e) {
+            /* ignore */
+        }
+    }
+    syncClothAtlasAppearanceUi();
+    syncAppearanceTexturePanelUi();
+    syncSwatchPaletteAppearanceUi();
+    refreshAllFaceDisplayColors();
+    prevTextures.forEach((tex) => {
+        try {
+            tex.dispose();
+        } catch (e2) {
+            /* ignore */
+        }
+    });
+}
+
+function applyAppearanceMode(mode) {
+    if (!APPEARANCE_MODE_IDS.includes(mode)) return;
+    currentAppearanceMode = mode;
+    try {
+        localStorage.setItem(APPEARANCE_MODE_STORAGE_KEY, mode);
+    } catch (e) {
+        /* ignore */
+    }
+    if (mode === "texture") {
+        if (currentFaceTextureSetId === "none") {
+            applyFaceTextureSetId("washiSamples");
+        } else {
+            syncClothAtlasAppearanceUi();
+            syncAppearanceTexturePanelUi();
+            syncSwatchPaletteAppearanceUi();
+            refreshAllFaceDisplayColors();
+        }
+    } else {
+        applyFaceTextureSetId("none");
+        if (mode === "dye") {
+            const el = document.getElementById("colorBySidesCheckbox");
+            if (el && !el.checked) {
+                el.checked = true;
+                if (lastLoadedNetData) {
+                    loadAndProcessNet(JSON.parse(JSON.stringify(lastLoadedNetData)), {
+                        allowUnknownSignature: true,
+                    });
+                } else {
+                    syncDyePaletteSelectUi();
+                    refreshAllFaceDisplayColors();
+                }
+            }
+        }
+    }
+    syncAppearanceModeSegmentedUi();
+    syncAppearanceTexturePanelUi();
+    syncSwatchPaletteAppearanceUi();
+}
+
+function initAppearanceModeFromStorage() {
+    try {
+        const stored = localStorage.getItem(APPEARANCE_MODE_STORAGE_KEY);
+        if (currentFaceTextureSetId !== "none") {
+            currentAppearanceMode = "texture";
+        } else if (APPEARANCE_MODE_IDS.includes(stored)) {
+            currentAppearanceMode = stored;
+        } else {
+            currentAppearanceMode = "solid";
+        }
+        if (
+            currentAppearanceMode === "texture" &&
+            currentFaceTextureSetId === "none"
+        ) {
+            currentAppearanceMode = "solid";
+        }
+    } catch (e) {
+        currentAppearanceMode =
+            currentFaceTextureSetId !== "none" ? "texture" : "solid";
+    }
+}
+
+function syncClothAtlasAppearanceUi() {
+    const wrap = document.getElementById("clothAtlasOptionsWrap");
+    const rowB = document.getElementById("clothAtlasClothBRow");
+    const rowTint = document.getElementById("clothAtlasTintRow");
+    const patternSel = document.getElementById("clothAtlasPatternSelect");
+    const selA = document.getElementById("clothAtlasSelectA");
+    const selB = document.getElementById("clothAtlasSelectB");
+    const tintA = document.getElementById("clothAtlasTintA");
+    const tintB = document.getElementById("clothAtlasTintB");
+    if (!wrap) return;
+    const on = currentFaceTextureSetId === "clothAtlas";
+    wrap.hidden = !on;
+    if (patternSel && CLOTH_ATLAS_PATTERN_IDS.includes(currentClothAtlasPattern))
+        patternSel.value = currentClothAtlasPattern;
+    if (selA) {
+        selA.value = normalizeClothRegistryId(
+            currentClothAtlasIdA,
+            CLOTH_ATLAS_REGISTRY[0].id,
+        );
+    }
+    if (selB) {
+        selB.value = normalizeClothRegistryId(
+            currentClothAtlasIdB,
+            CLOTH_ATLAS_REGISTRY[0].id,
+        );
+    }
+    if (rowB) rowB.hidden = !on || currentClothAtlasPattern !== "alternateTwo";
+    if (rowTint)
+        rowTint.hidden = !on || currentClothAtlasPattern !== "alternateTint";
+    if (tintA) {
+        try {
+            tintA.value = netColorToHexInput(currentClothAtlasTintHexA);
+        } catch (e) {
+            tintA.value = "#ffffff";
+        }
+    }
+    if (tintB) {
+        try {
+            tintB.value = netColorToHexInput(currentClothAtlasTintHexB);
+        } catch (e) {
+            tintB.value = "#e8dff2";
+        }
+    }
+}
+
+function syncDyePaletteSelectUi() {
+    const sel = document.getElementById("dyePaletteSelect");
+    if (!sel) return;
+    const on = colorCoordinatedBySidesEnabled();
+    sel.disabled = !on;
+    sel.title = on
+        ? "Palettes keyed to triangle, square, pentagon, … (and fabric scans when selected)."
+        : "Turn on Color by sides to choose a palette.";
+    syncSwatchPaletteAppearanceUi();
+}
+
+function fillSwatchUniformPickSelect(el) {
+    if (!el) return;
+    const def = DYE_PALETTE_DEFINITIONS[currentDyePaletteId];
+    el.innerHTML = "";
+    if (!def?._swatchPalette || !Array.isArray(def.swatches)) return;
+    for (const s of def.swatches) {
+        const opt = document.createElement("option");
+        opt.value = s.id;
+        opt.textContent = s.label;
+        el.appendChild(opt);
+    }
+    const norm = normalizeSwatchIdForPalette(
+        currentSwatchUniformPickId,
+        def,
+    );
+    if (norm) currentSwatchUniformPickId = norm;
+    el.value = currentSwatchUniformPickId;
+}
+
+function syncSwatchPaletteAppearanceUi() {
+    const wrap = document.getElementById("swatchPaletteOptionsWrap");
+    const modeSel = document.getElementById("swatchApplyModeSelect");
+    const pickRow = document.getElementById("swatchUniformPickRow");
+    const pickSel = document.getElementById("swatchUniformPickSelect");
+    const blockedEl = document.getElementById("appearanceSwatchScanBlocked");
+    const on = colorCoordinatedBySidesEnabled();
+    const swatchPal =
+        DYE_PALETTE_DEFINITIONS[currentDyePaletteId]?._swatchPalette === true;
+    const scansBlocked =
+        swatchPal && currentFaceTextureSetId !== "none";
+    if (blockedEl) blockedEl.hidden = !scansBlocked;
+    const show = on && swatchPal && !scansBlocked;
+    if (wrap) wrap.hidden = !show;
+    if (!show) return;
+    fillSwatchUniformPickSelect(pickSel);
+    if (modeSel) {
+        modeSel.value = SWATCH_APPLY_MODE_IDS.includes(currentSwatchApplyMode)
+            ? currentSwatchApplyMode
+            : "perFaceRandom";
+    }
+    if (pickRow)
+        pickRow.hidden = currentSwatchApplyMode !== "uniformPick";
+    if (pickSel && currentSwatchApplyMode === "uniformPick") {
+        pickSel.value = normalizeSwatchIdForPalette(
+            currentSwatchUniformPickId,
+            DYE_PALETTE_DEFINITIONS[currentDyePaletteId],
+        );
+    }
+}
+
 /**
  * Stellation overlays (diagram picks + uniform caps): see-through vs solid from Appearance.
  * @param {THREE.Material} mat
  */
 function applyTranslucentStellationSurfaceMaterial(mat) {
     if (!mat || !("opacity" in mat) || mat.opacity === undefined) return;
-    const el = document.getElementById("translucentStellationsCheckbox");
-    const wantTranslucent = el ? el.checked : true;
+    const el = document.getElementById("opaqueStellationsCheckbox");
+    const wantTranslucent = el ? !el.checked : true;
     if (!wantTranslucent) {
         mat.opacity = 1;
         mat.transparent = false;
@@ -4215,21 +7829,43 @@ function applyTranslucentStellationSurfaceMaterial(mat) {
     if ("depthWrite" in mat) mat.depthWrite = false;
 }
 
-function createFaceMaterial(colorHex, mode) {
+/**
+ * @param {string|number} colorHex
+ * @param {string} mode
+ * @param {THREE.Texture | null} [diffuseMap] Shared per–side-count swatch; matte when set.
+ */
+function createFaceMaterial(colorHex, mode, diffuseMap = null) {
     const env = scene?.environment || null;
+    const hasMap = diffuseMap != null;
+    const side = THREE.DoubleSide;
     switch (mode) {
         case "wireframe":
             return new THREE.MeshBasicMaterial({
                 color: 0xffffff,
                 transparent: true,
                 opacity: 0.1,
-                side: THREE.DoubleSide,
+                side,
                 depthWrite: false,
             });
         case "translucent":
+            if (hasMap) {
+                return new THREE.MeshStandardMaterial({
+                    color: colorHex,
+                    map: diffuseMap,
+                    side,
+                    roughness: 0.92,
+                    metalness: 0,
+                    flatShading: true,
+                    transparent: true,
+                    opacity: TRANSLUCENT_FACE_OPACITY,
+                    depthWrite: false,
+                    envMap: env,
+                    envMapIntensity: 0.06,
+                });
+            }
             return new THREE.MeshStandardMaterial({
                 color: colorHex,
-                side: THREE.DoubleSide,
+                side,
                 roughness: 0.55,
                 metalness: 0,
                 flatShading: true,
@@ -4238,9 +7874,21 @@ function createFaceMaterial(colorHex, mode) {
                 depthWrite: false,
             });
         case "rendered":
+            if (hasMap) {
+                return new THREE.MeshStandardMaterial({
+                    color: colorHex,
+                    map: diffuseMap,
+                    side,
+                    roughness: 0.96,
+                    metalness: 0,
+                    flatShading: true,
+                    envMap: env,
+                    envMapIntensity: 0.08,
+                });
+            }
             return new THREE.MeshPhysicalMaterial({
                 color: colorHex,
-                side: THREE.DoubleSide,
+                side,
                 roughness: 0.28,
                 metalness: 0.14,
                 clearcoat: 0.45,
@@ -4250,9 +7898,19 @@ function createFaceMaterial(colorHex, mode) {
             });
         case "flat":
         default:
+            if (hasMap) {
+                return new THREE.MeshStandardMaterial({
+                    color: colorHex,
+                    map: diffuseMap,
+                    side,
+                    roughness: 0.98,
+                    metalness: 0,
+                    flatShading: true,
+                });
+            }
             return new THREE.MeshStandardMaterial({
                 color: colorHex,
-                side: THREE.DoubleSide,
+                side,
                 roughness: 0.52,
                 metalness: 0,
                 flatShading: true,
@@ -4261,10 +7919,19 @@ function createFaceMaterial(colorHex, mode) {
 }
 
 function disposeFaceMeshMaterial(mesh) {
-    if (mesh?.material) {
-        mesh.material.dispose();
-        mesh.material = null;
+    if (!mesh?.material) return;
+    const mat = mesh.material;
+    const map = mat.map;
+    if (map && !map.userData?.sharedDyeTexture) {
+        try {
+            map.dispose();
+        } catch (e) {
+            /* ignore */
+        }
     }
+    mat.map = null;
+    mat.dispose();
+    mesh.material = null;
 }
 
 function syncLightingToThemeAndMode() {
@@ -4344,9 +8011,15 @@ function updateEdgeLinesForRenderMode() {
 
 function applyRenderModeVisualLayers() {
     const mode = RENDER_MODES[currentRenderModeIndex] || "flat";
-    if (renderModeSlider)
+    if (renderModeSlider) {
         renderModeSlider.value = String(currentRenderModeIndex);
+        renderModeSlider.setAttribute(
+            "aria-valuenow",
+            String(currentRenderModeIndex),
+        );
+    }
     updateRenderModeStopsHighlight();
+    syncCrosshairAxesHelperVisibilityForRenderMode();
     if (shadowGround) shadowGround.visible = false;
     if (renderer)
         renderer.toneMappingExposure = mode === "rendered" ? 1.1 : 1.0;
@@ -4362,8 +8035,15 @@ function applyRenderMode(index) {
     currentRenderModeIndex = Math.max(0, Math.min(3, Number(index) || 0));
     const mode = RENDER_MODES[currentRenderModeIndex];
     forEachFaceMesh((mesh) => {
+        const fid = mesh.userData.faceId;
+        const n = allVertices[fid]?.numSides ?? 3;
         disposeFaceMeshMaterial(mesh);
-        mesh.material = createFaceMaterial(mesh.userData.faceColorHex, mode);
+        mesh.material = buildFaceMaterial(
+            mesh.userData.faceColorHex,
+            mode,
+            n,
+            fid,
+        );
     });
     applyRenderModeVisualLayers();
     refreshBuilderFaceSelectionHighlight();
@@ -4418,12 +8098,11 @@ function addShadowGround() {
 }
 
 function updateRenderModeStopsHighlight() {
-    document.querySelectorAll("[data-mode-stop]").forEach((el) => {
-        el.classList.toggle(
-            "active",
-            Number(el.dataset.modeStop) === currentRenderModeIndex,
-        );
-    });
+    const vLabel = document.getElementById("renderModeValueLabel");
+    if (vLabel) {
+        vLabel.textContent =
+            RENDER_MODE_LABELS[currentRenderModeIndex] ?? "Flat";
+    }
 }
 
 function confirmDiscardBuilderWork(contextMsg) {
@@ -4496,14 +8175,17 @@ function createFaceNormalArrowGroup(dir, origin, shaftLen, headLen, headRad) {
 function createNetFromData(netData) {
     console.log("Creating net geometry from loaded data...");
     const L = sideLength;
+    syncFaceHexOverridesFromNetData(netData);
+    syncFaceSwatchAssignFromNetData(netData);
     clearSceneGeometry();
 
     try {
         allVertices[1] = resolveNetFaceVertices(netData.baseFace, L);
         const baseSideCount = allVertices[1].numSides ?? allVertices[1].length;
-        const baseFaceColorValue = resolveDisplayColorHex(
-            netData.baseFace.color,
+        const baseFaceColorValue = resolveFaceDisplayColorHex(
+            1,
             baseSideCount,
+            netData,
         );
         const baseGeom = createRegularPolygonGeometry(allVertices[1]);
         if (
@@ -4513,9 +8195,11 @@ function createNetFromData(netData) {
             throw new Error("Base geometry creation failed.");
         f1Mesh = new THREE.Mesh(
             baseGeom,
-            createFaceMaterial(
+            buildFaceMaterial(
                 baseFaceColorValue,
                 RENDER_MODES[currentRenderModeIndex],
+                baseSideCount,
+                1,
             ),
         );
         f1Mesh.userData.faceColorHex = baseFaceColorValue;
@@ -4546,7 +8230,6 @@ function createNetFromData(netData) {
         for (const conn of connections) {
             const i = conn.from;
             const j = conn.to;
-            const colorInput = conn.color;
             if (typeof i !== "number" || typeof j !== "number" || j < 0) {
                 console.warn(
                     `Skipping invalid connection definition (missing or invalid type/value):`,
@@ -4718,12 +8401,14 @@ function createNetFromData(netData) {
                     geometry.attributes.position.count === 0
                 )
                     throw new Error(`Geometry creation failed for F${i}`);
-                const colorValue = resolveDisplayColorHex(colorInput, k);
+                const colorValue = resolveFaceDisplayColorHex(i, k, netData);
                 const faceMesh = new THREE.Mesh(
                     geometry,
-                    createFaceMaterial(
+                    buildFaceMaterial(
                         colorValue,
                         RENDER_MODES[currentRenderModeIndex],
+                        k,
+                        i,
                     ),
                 );
                 faceMesh.userData.faceColorHex = colorValue;
@@ -4746,12 +8431,23 @@ function createNetFromData(netData) {
         }
         console.log("Finished creating net geometry.");
 
+        refreshAllFaceMeshUvs();
+
+        maybeInitializeSwatchAssignmentsForNet();
+        sanitizeFaceSwatchMapForActivePalette();
+        rehydrateActiveUniformRandomSwatchId();
+        if (isSwatchDyePaletteSelected()) refreshAllFaceDisplayColors();
+
+        if (usesNetAtlasUvs()) ensureClothAtlasTexturesLoaded();
+
         if (toggleNormalsCheckbox)
             setNormalHelpersVisibility(toggleNormalsCheckbox.checked);
         else setNormalHelpersVisibility(false);
         applyRenderModeVisualLayers();
         if (isNetBuilderActive) rebuildEdgePickMeshes();
         refreshFoldControlState();
+        updateFoldPlayheadUi();
+        updateCrosshairAxesWorldPosition();
     } catch (error) {
         console.error("Error during net creation:", error);
         alert(
@@ -5130,7 +8826,7 @@ function clearEdgePickGroup() {
 
 function syncBuilderEdgePicksVisibility() {
     if (!edgePickGroup) return;
-    const netFlat = !isFolded && !isAnimating;
+    const netFlat = !isFolded && !isFoldOrPlaybackBusy();
     edgePickGroup.visible = Boolean(isNetBuilderActive && netFlat);
 }
 
@@ -5218,9 +8914,16 @@ function exitNetBuilder() {
     if (buildCustomNetBtnEl) buildCustomNetBtnEl.textContent = "Build net";
     clearEdgePickGroup();
     setBuilderHintVisible(false, 0, 0);
+    syncFoldChallengeUi();
 }
 
 function enterNetBuilderFromData(netData, options = {}) {
+    if (options.fromScratchBuild === true) {
+        const pn = document.getElementById("presetNets");
+        const sn = document.getElementById("savedNetsSelect");
+        if (pn) pn.value = "";
+        if (sn) sn.value = "";
+    }
     clearBuilderFaceSelection();
     builderNetData = JSON.parse(JSON.stringify(netData));
     builderPendingEdge = null;
@@ -5372,7 +9075,7 @@ function getBuilderFacePickMeshes() {
     return out;
 }
 
-function pickBuilderFaceMesh(clientX, clientY) {
+function pickFaceMeshAtClient(clientX, clientY) {
     if (!renderer || !camera) return null;
     const rect = renderer.domElement.getBoundingClientRect();
     pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -5594,9 +9297,16 @@ function applyReplaceSelectedFaceShape() {
     }
 }
 
-function refreshSavedNetsSelect() {
+/**
+ * @param {string} [preferredId] — after rebuild, select this id if it exists; if omitted, keep prior selection when still valid.
+ */
+function refreshSavedNetsSelect(preferredId) {
     const sel = document.getElementById("savedNetsSelect");
     if (!sel) return;
+    const prev =
+        preferredId !== undefined && preferredId !== null
+            ? String(preferredId)
+            : sel.value;
     sel.innerHTML = "";
     const ph = document.createElement("option");
     ph.value = "";
@@ -5607,6 +9317,11 @@ function refreshSavedNetsSelect() {
         opt.value = p.id;
         opt.textContent = p.name;
         sel.appendChild(opt);
+    }
+    if (prev && [...sel.options].some((o) => o.value === prev)) {
+        sel.value = prev;
+    } else {
+        sel.value = "";
     }
 }
 
@@ -5634,9 +9349,12 @@ function getPivotsForStage(stage) {
     }
 }
 
-// triggerAnimationStage uses currentFoldAngles when present; otherwise trial fold angles.
+// triggerAnimationStage uses per-connection foldAngleRad, then currentFoldAngles, else trial fold angles.
 function triggerAnimationStage(stage, meta = {}) {
-    if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) {
+    if (
+        !hasLibraryFoldSupport() &&
+        NUM_ANIMATION_STAGES < 1
+    ) {
         console.warn("Cannot trigger animation: no fold angles and no flaps.");
         isAnimating = false;
         return;
@@ -5649,14 +9367,17 @@ function triggerAnimationStage(stage, meta = {}) {
         }
         isAnimating = false;
         currentAnimationStage = 0;
-        pauseButton.disabled = true;
-        pauseButton.textContent = "Pause";
+        foldPlaybackActive = false;
+        lastFoldPlaybackTime = 0;
+        if (foldPlayPause) {
+            setFoldPlayPauseGlyph(false);
+        }
         isPaused = false;
         const endStageUnfold = -(NUM_ANIMATION_STAGES + 1);
         if (stage === endStageUnfold) {
             isFolded = false;
             console.log(`Seq unfold complete.`);
-            if (!currentFoldAngles) setInfoLayoutStatus();
+            if (!hasLibraryFoldSupport()) setInfoLayoutStatus();
         } else if (meta.foldSequenceComplete) {
             isFolded = true;
             console.log("Seq fold complete.");
@@ -5710,7 +9431,21 @@ function triggerAnimationStage(stage, meta = {}) {
         const sides_i = faceData.numSides;
         const sides_j = parentData.numSides;
         let baseTargetAngle;
-        if (currentFoldAngles) {
+        const stageConn =
+            stage >= 1 &&
+            stage <= NUM_ANIMATION_STAGES &&
+            lastLoadedNetData?.connections
+                ? lastLoadedNetData.connections.find(
+                      (c) => Number(c?.from) === faceIndex,
+                  ) ?? lastLoadedNetData.connections[stage - 1] ?? null
+                : null;
+        if (
+            stageConn &&
+            typeof stageConn.foldAngleRad === "number" &&
+            Number.isFinite(stageConn.foldAngleRad)
+        ) {
+            baseTargetAngle = stageConn.foldAngleRad;
+        } else if (currentFoldAngles) {
             let baseFoldAngleKey = `${sides_i}-${sides_j}`;
             baseTargetAngle = currentFoldAngles[baseFoldAngleKey];
             if (baseTargetAngle === undefined) {
@@ -5729,7 +9464,27 @@ function triggerAnimationStage(stage, meta = {}) {
         if (unfolding) baseTargetAngle = 0;
 
         let angleSign = 1;
-        if (!unfolding) {
+        const forcedFoldSign =
+            stageConn &&
+            typeof stageConn.foldSign === "number" &&
+            Number.isFinite(stageConn.foldSign) &&
+            Math.abs(stageConn.foldSign) > 0
+                ? stageConn.foldSign > 0
+                    ? 1
+                    : -1
+                : null;
+        if (!unfolding && forcedFoldSign != null) {
+            angleSign = forcedFoldSign;
+        } else if (
+            !unfolding &&
+            netHasPerConnectionFoldAngles(lastLoadedNetData) &&
+            !currentFoldAngles
+        ) {
+            // Nets with only JSON hinge angles (no library fold table): centroid
+            // "outward" heuristics assume ~spherical closure and mis-guess signs
+            // on toroids and similar; trust foldAngleRad including its sign.
+            angleSign = 1;
+        } else if (!unfolding) {
             const parentWorldVertices = getMeshWorldVertices(parentIndex);
             const centerF = parentWorldVertices
                 ? calculateWorldCentroid(parentWorldVertices)
@@ -5769,15 +9524,28 @@ function triggerAnimationStage(stage, meta = {}) {
                 centerG_minus && normalG_minus
                     ? mPointVec3.copy(centerG_minus).add(normalG_minus)
                     : null;
+            const bulkLimit =
+                netHasPerConnectionFoldAngles(lastLoadedNetData)
+                    ? null
+                    : faceIndex - 1;
             const bulkC = computeBulkCentroidWorldExcludingFace(
                 faceIndex,
-                faceIndex - 1,
+                bulkLimit,
             );
             if (bulkC && centerG_plus && centerG_minus) {
-                const dBulkPlus = centerG_plus.distanceToSquared(bulkC);
-                const dBulkMinus = centerG_minus.distanceToSquared(bulkC);
-                if (Math.abs(dBulkPlus - dBulkMinus) > 1e-5) {
-                    angleSign = dBulkPlus < dBulkMinus ? 1 : -1;
+                // Prefer the candidate whose face normal points outward from the
+                // partially folded bulk centroid. This is more stable for
+                // irregular / per-edge-angle Catalan nets than pure centroid distance.
+                const outwardPlus =
+                    normalG_plus && centerG_plus
+                        ? _stellTmpA.copy(centerG_plus).sub(bulkC).dot(normalG_plus)
+                        : 0;
+                const outwardMinus =
+                    normalG_minus && centerG_minus
+                        ? _stellTmpB.copy(centerG_minus).sub(bulkC).dot(normalG_minus)
+                        : 0;
+                if (Math.abs(outwardPlus - outwardMinus) > 1e-6) {
+                    angleSign = outwardPlus >= outwardMinus ? 1 : -1;
                 } else if (M1 && M2 && M2_prime) {
                     const dSq = M1.distanceToSquared(M2);
                     const dPrimeSq = M1.distanceToSquared(M2_prime);
@@ -5803,21 +9571,227 @@ function triggerAnimationStage(stage, meta = {}) {
     if (meta.computeOnly) {
         return;
     }
-    animationStartTime = performance.now();
-    pausedElapsedTime = 0;
-    isAnimating = true;
-    isPaused = false;
-    pauseButton.disabled = false;
-    pauseButton.textContent = "Pause";
     syncBuilderEdgePicksVisibility();
+}
+
+function resetAllFlapPivotQuaternions() {
+    for (const key of Object.keys(pivots)) {
+        const p = pivots[key];
+        if (p && p.isObject3D) p.quaternion.identity();
+    }
+}
+
+/**
+ * Rebuild fold state from flat: playhead 0 = net flat, NUM_ANIMATION_STAGES = all hinges at target.
+ * Uses the same hinge math as the former staged animation (linear slerp on the active hinge only).
+ */
+function applyFoldPlayhead(ph, meta = {}) {
+    if (!f1Mesh || NUM_ANIMATION_STAGES < 1) return;
+    const N = NUM_ANIMATION_STAGES;
+    const t = Math.min(Math.max(ph, 0), N);
+    const fromUserScrub = meta.fromUserScrub === true;
+
+    resetAllFlapPivotQuaternions();
+
+    const full = Math.min(Math.floor(t + 1e-8), N);
+    const frac = Math.min(Math.max(t - full, 0), 1);
+
+    for (let s = 1; s <= full; s++) {
+        triggerAnimationStage(s, { computeOnly: true });
+        for (const pivotIndex of pivotsInCurrentStage) {
+            const tt = targetQuaternions[pivotIndex];
+            if (tt && pivots[pivotIndex]) pivots[pivotIndex].quaternion.copy(tt);
+        }
+        scene.updateMatrixWorld(true);
+    }
+
+    if (full < N && frac > 1e-10) {
+        triggerAnimationStage(full + 1, { computeOnly: true });
+        for (const pivotIndex of pivotsInCurrentStage) {
+            const pivot = pivots[pivotIndex];
+            const sq = startQuaternions[pivotIndex];
+            const tb = targetQuaternions[pivotIndex];
+            if (pivot && sq && tb) {
+                pivot.quaternion.copy(sq).slerp(tb, frac);
+            }
+        }
+    }
+
+    scene.updateMatrixWorld(true);
+    currentAnimationStage = 0;
+    isAnimating = false;
+    foldPlayhead = t;
+    isFolded = t >= N - 1e-6;
+
+    if (
+        fromUserScrub &&
+        trialFoldPauseActive &&
+        t < N - 1e-3
+    ) {
+        trialFoldPauseActive = false;
+        clearTrialJuiceVisuals();
+        setInfoLayoutStatus();
+    }
+
+    if (!meta.skipUi) {
+        updateFoldPlayheadUi();
+        refreshFoldControlState();
+    }
+    syncBuilderEdgePicksVisibility();
+    updateCrosshairAxesWorldPosition();
+}
+
+const FOLD_PLAY_GLYPH_SVG =
+    '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12.6 12L8 7.4L9.4 6L15.4 12L9.4 18L8 16.6L12.6 12Z" fill="currentColor"/></svg>';
+const FOLD_PAUSE_GLYPH_SVG =
+    '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="5" width="5" height="14" rx="1.5" fill="currentColor"/><rect x="13" y="5" width="5" height="14" rx="1.5" fill="currentColor"/></svg>';
+
+function setFoldPlayPauseGlyph(playbackActive) {
+    if (!foldPlayPause) return;
+    foldPlayPause.innerHTML = playbackActive
+        ? FOLD_PAUSE_GLYPH_SVG
+        : FOLD_PLAY_GLYPH_SVG;
+    foldPlayPause.classList.toggle("fold-transport-btn--active", playbackActive);
+}
+
+function updateFoldPlayheadSliderTrackFill() {
+    const el = foldPlayheadSlider;
+    if (!el) return;
+    const v = Number(el.value);
+    const pct = Number.isFinite(v)
+        ? Math.min(100, Math.max(0, (v / 1000) * 100))
+        : 0;
+    el.style.setProperty("--slider-fill-pct", `${pct}%`);
+}
+
+function updateSpeedSliderTrackFill() {
+    const el = speedSlider;
+    if (!el) return;
+    const min = Number(el.min) || 10;
+    const max = Number(el.max) || 4000;
+    const v = Number(el.value);
+    const pct = Number.isFinite(v)
+        ? Math.min(100, Math.max(0, ((v - min) / (max - min)) * 100))
+        : 0;
+    el.style.setProperty("--slider-fill-pct", `${pct}%`);
+}
+
+function updateFoldPlayheadUi() {
+    if (!foldPlayheadSlider || !foldPlayheadLabel) return;
+    updatingPlayheadSlider = true;
+    const n = NUM_ANIMATION_STAGES;
+    if (n < 1) {
+        foldPlayheadSlider.value = "0";
+        foldPlayheadLabel.textContent = "—";
+        updatingPlayheadSlider = false;
+        updateFoldPlayheadSliderTrackFill();
+        return;
+    }
+    const pct = Math.round((1000 * foldPlayhead) / n);
+    const clamped = Math.min(1000, Math.max(0, pct));
+    foldPlayheadSlider.value = String(clamped);
+    foldPlayheadSlider.setAttribute("aria-valuenow", String(clamped));
+    foldPlayheadLabel.textContent = `${foldPlayhead.toFixed(2)} / ${n}`;
+    updatingPlayheadSlider = false;
+    updateFoldPlayheadSliderTrackFill();
+}
+
+function onFoldPlayheadSliderInput() {
+    if (updatingPlayheadSlider || NUM_ANIMATION_STAGES < 1) return;
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (trialFoldPauseActive) {
+        trialFoldPauseActive = false;
+        clearTrialJuiceVisuals();
+        setInfoLayoutStatus();
+    }
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
+    const v = (Number(foldPlayheadSlider.value) / 1000) * NUM_ANIMATION_STAGES;
+    applyFoldPlayhead(v, { fromUserScrub: true });
+}
+
+function toggleFoldPlaybackPause() {
+    if (!f1Mesh || NUM_ANIMATION_STAGES < 1) return;
+    if (trialFoldPauseActive) return;
+    if (!foldPlaybackActive) {
+        if (foldPlayhead >= NUM_ANIMATION_STAGES - 1e-6) foldPlaybackDir = -1;
+        else foldPlaybackDir = 1;
+        foldPlaybackActive = true;
+        lastFoldPlaybackTime = performance.now();
+    } else {
+        foldPlaybackActive = false;
+        lastFoldPlaybackTime = 0;
+    }
+    if (foldPlayPause) {
+        setFoldPlayPauseGlyph(foldPlaybackActive);
+    }
+    refreshFoldControlState();
+    syncBuilderEdgePicksVisibility();
+}
+
+function onFoldPlayReverseClick() {
+    if (!f1Mesh || NUM_ANIMATION_STAGES < 1 || trialFoldPauseActive) return;
+    foldPlaybackDir = -1;
+    foldPlaybackActive = true;
+    lastFoldPlaybackTime = performance.now();
+    setFoldPlayPauseGlyph(true);
+    refreshFoldControlState();
+    syncBuilderEdgePicksVisibility();
+}
+
+function onFoldJumpToStart() {
+    if (!f1Mesh || NUM_ANIMATION_STAGES < 1) return;
+    if (trialFoldPauseActive) {
+        trialFoldPauseActive = false;
+        clearTrialJuiceVisuals();
+        setInfoLayoutStatus();
+    }
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
+    applyFoldPlayhead(0, { fromUserScrub: true });
+}
+
+function onFoldSkipBack() {
+    if (!f1Mesh || NUM_ANIMATION_STAGES < 1) return;
+    if (trialFoldPauseActive) {
+        trialFoldPauseActive = false;
+        clearTrialJuiceVisuals();
+        setInfoLayoutStatus();
+    }
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
+    const nh = Math.max(0, Math.ceil(foldPlayhead - 1e-9) - 1);
+    applyFoldPlayhead(nh, { fromUserScrub: true });
+}
+
+function onFoldSkipForward() {
+    if (!f1Mesh || NUM_ANIMATION_STAGES < 1) return;
+    if (trialFoldPauseActive) {
+        trialFoldPauseActive = false;
+        clearTrialJuiceVisuals();
+        setInfoLayoutStatus();
+    }
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
+    const nh = Math.min(
+        NUM_ANIMATION_STAGES,
+        Math.floor(foldPlayhead + 1e-9) + 1,
+    );
+    applyFoldPlayhead(nh, { fromUserScrub: true });
+    if (nh >= NUM_ANIMATION_STAGES - 1e-9 && canTrialFoldLayout()) {
+        beginTrialReboundPause();
+    }
 }
 
 /** Apply every hinge target in order with no tweening (same math as animated fold). */
 function instantFoldToClosed() {
     if (!f1Mesh) return;
-    if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) return;
+    if (!hasLibraryFoldSupport() && NUM_ANIMATION_STAGES < 1) return;
     if (trialFoldPauseActive) return;
-    if (isAnimating) return;
+    if (foldPlaybackActive) return;
     if (isFolded) return;
 
     if (NUM_ANIMATION_STAGES < 1) {
@@ -5827,80 +9801,12 @@ function instantFoldToClosed() {
         return;
     }
 
-    for (let s = 1; s <= NUM_ANIMATION_STAGES; s++) {
-        triggerAnimationStage(s, { computeOnly: true });
-        for (const pivotIndex of pivotsInCurrentStage) {
-            const t = targetQuaternions[pivotIndex];
-            if (t && pivots[pivotIndex]) pivots[pivotIndex].quaternion.copy(t);
-        }
-        scene.updateMatrixWorld(true);
-    }
-
-    isAnimating = false;
-    isPaused = false;
-    currentAnimationStage = 0;
-    pivotsInCurrentStage = [];
-    pauseButton.disabled = true;
-    pauseButton.textContent = "Pause";
-    isFolded = true;
+    foldPlaybackActive = false;
+    lastFoldPlaybackTime = 0;
+    if (foldPlayPause) setFoldPlayPauseGlyph(false);
+    foldPlayhead = NUM_ANIMATION_STAGES;
+    applyFoldPlayhead(foldPlayhead);
     tryScratchFoldTrophyReward();
-    refreshFoldControlState();
-    syncBuilderEdgePicksVisibility();
-}
-
-// toggleFold, togglePause, onWindowResize, easeInOutQuad, animate
-function toggleFold() {
-    if (!f1Mesh) return;
-    if (!currentFoldAngles && NUM_ANIMATION_STAGES < 1) return;
-    if (trialFoldPauseActive) {
-        trialFoldPauseActive = false;
-        clearTrialJuiceVisuals();
-        if (infoDisplay) {
-            infoDisplay.textContent =
-                "Unfolding… (still no fold table for this net)";
-        }
-        triggerAnimationStage(-1);
-        refreshFoldControlState();
-        syncBuilderEdgePicksVisibility();
-        return;
-    }
-    if (isAnimating && !isPaused) return;
-    if (isAnimating && isPaused) {
-        togglePause();
-        return;
-    }
-    isPaused = false;
-    pauseButton.textContent = "Pause";
-    if (!isFolded) {
-        if (NUM_ANIMATION_STAGES < 1) {
-            isFolded = true;
-            refreshFoldControlState();
-            syncBuilderEdgePicksVisibility();
-            return;
-        }
-        triggerAnimationStage(1);
-    } else {
-        if (NUM_ANIMATION_STAGES < 1) {
-            isFolded = false;
-            refreshFoldControlState();
-            syncBuilderEdgePicksVisibility();
-            return;
-        }
-        triggerAnimationStage(-1);
-    }
-    refreshFoldControlState();
-    syncBuilderEdgePicksVisibility();
-}
-function togglePause() {
-    if (!isAnimating) return;
-    isPaused = !isPaused;
-    if (isPaused) {
-        pausedElapsedTime = performance.now() - animationStartTime;
-        pauseButton.textContent = "Resume";
-    } else {
-        animationStartTime = performance.now() - pausedElapsedTime;
-        pauseButton.textContent = "Pause";
-    }
 }
 function onWindowResize() {
     if (!camera || !renderer) return;
@@ -5911,66 +9817,89 @@ function onWindowResize() {
     if (controls?.handleResize) controls.handleResize();
     redrawStellationDiagram();
 }
-function easeInOutQuad(t) {
-    return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-}
-
 function animate(currentTime) {
     requestAnimationFrame(animate);
-    if (isAnimating && !isPaused) {
-        const elapsedTime = currentTime - animationStartTime;
-        let progress = Math.min(elapsedTime / currentAnimationDuration, 1);
-        const easedProgress = easeInOutQuad(progress);
-        for (const pivotIndex of pivotsInCurrentStage) {
-            const pivot = pivots[pivotIndex];
-            if (
-                pivot &&
-                startQuaternions[pivotIndex] &&
-                targetQuaternions[pivotIndex]
-            )
-                pivot.quaternion
-                    .copy(startQuaternions[pivotIndex])
-                    .slerp(targetQuaternions[pivotIndex], easedProgress);
+    const now =
+        typeof currentTime === "number" && Number.isFinite(currentTime)
+            ? currentTime
+            : performance.now();
+    if (webmCodecSession) {
+        stepWebMCodecExport(now);
+    } else if (
+        foldPlaybackActive &&
+        NUM_ANIMATION_STAGES >= 1 &&
+        !trialFoldPauseActive &&
+        f1Mesh
+    ) {
+        if (lastFoldPlaybackTime <= 0) {
+            lastFoldPlaybackTime = now;
         }
-        if (progress >= 1) {
-            for (const pivotIndex of pivotsInCurrentStage) {
-                const pivot = pivots[pivotIndex];
-                if (pivot && targetQuaternions[pivotIndex])
-                    pivot.quaternion.copy(targetQuaternions[pivotIndex]);
-            }
-            let nextStage = 0;
-            if (
-                currentAnimationStage > 0 &&
-                currentAnimationStage < NUM_ANIMATION_STAGES
-            )
-                nextStage = currentAnimationStage + 1;
-            else if (
-                currentAnimationStage < 0 &&
-                currentAnimationStage > -NUM_ANIMATION_STAGES
-            )
-                nextStage = currentAnimationStage - 1;
-            else if (currentAnimationStage === NUM_ANIMATION_STAGES)
-                nextStage = canTrialFoldLayout() ? -1 : 0; // Trial: rebound instead of "closed"
-            else if (currentAnimationStage === -NUM_ANIMATION_STAGES)
-                nextStage = -(NUM_ANIMATION_STAGES + 1); // End unfold
-            const trialRebound =
-                nextStage === -1 &&
-                currentAnimationStage === NUM_ANIMATION_STAGES &&
-                canTrialFoldLayout();
-            if (trialRebound) {
+        const rawDt = now - lastFoldPlaybackTime;
+        const dt = Math.min(Math.max(0, rawDt), 250);
+        lastFoldPlaybackTime = now;
+        const dur = Number(currentAnimationDuration);
+        const safeDur =
+            Number.isFinite(dur) && dur > 0 ? dur : 500;
+        const d = (dt / safeDur) * foldPlaybackDir;
+        const N = NUM_ANIMATION_STAGES;
+        let nh = foldPlayhead + d;
+
+        if (nh <= 0) {
+            nh = 0;
+            foldPlaybackActive = false;
+            lastFoldPlaybackTime = 0;
+            if (foldPlayPause) setFoldPlayPauseGlyph(false);
+            applyFoldPlayhead(nh, { skipUi: true });
+            updateFoldPlayheadUi();
+            refreshFoldControlState();
+        } else if (nh >= N) {
+            nh = N;
+            foldPlayhead = nh;
+            applyFoldPlayhead(nh, { skipUi: true });
+            updateFoldPlayheadUi();
+            foldPlaybackActive = false;
+            lastFoldPlaybackTime = 0;
+            if (foldPlayPause) setFoldPlayPauseGlyph(false);
+            if (canTrialFoldLayout()) {
                 beginTrialReboundPause();
             } else {
-                triggerAnimationStage(nextStage, {
-                    foldSequenceComplete:
-                        nextStage === 0 &&
-                        currentAnimationStage === NUM_ANIMATION_STAGES,
-                });
+                tryScratchFoldTrophyReward();
+                refreshFoldControlState();
+            }
+        } else {
+            const wasFolded = isFolded;
+            foldPlayhead = nh;
+            applyFoldPlayhead(nh, { skipUi: true });
+            updateFoldPlayheadUi();
+            if (isFolded !== wasFolded) {
+                refreshFoldControlState();
             }
         }
+    } else {
+        lastFoldPlaybackTime = 0;
     }
     syncBuilderEdgePicksVisibility();
     controls.update();
     renderer.render(scene, camera);
+
+    if (webmCodecSession) {
+        encodeWebMCodecFrame();
+        const s = webmCodecSession;
+        if (s?.pendingStop) {
+            webmCodecSession = null;
+            s.pendingStop = false;
+            void finalizeWebMCodecExport(s).catch((err) => {
+                console.error("WebM finalize rejected:", err);
+                try {
+                    restoreAfterWebMCodecSession(s, null);
+                } catch (e2) {
+                    webmCodecSession = null;
+                    setWebmExportStatus("", false);
+                    refreshExportToolbarState();
+                }
+            });
+        }
+    }
 }
 
 const presetNets = document.getElementById("presetNets");
@@ -5990,12 +9919,17 @@ savedNetsSelect?.addEventListener("change", () => {
     }
     const presets = NetBuilder.loadCustomPresetsFromStorage();
     const p = presets.find((x) => x.id === id);
-    savedNetsSelect.value = "";
     if (!p) {
+        savedNetsSelect.value = "";
         alert("Saved net not found.");
         return;
     }
     enterNetBuilderFromData(p.netData, { fromSavedPreset: true });
+    const presetEl = document.getElementById("presetNets");
+    if (presetEl) presetEl.value = "";
+    if (!lastLoadedNetData) {
+        savedNetsSelect.value = "";
+    }
 });
 
 presetNets.addEventListener("change", async (e) => {
@@ -6011,11 +9945,17 @@ presetNets.addEventListener("change", async (e) => {
         if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
         const netData = await response.json();
         console.log(`Processing preset net: ${netName}`);
-        loadAndProcessNet(netData, { trophyEligible: false });
+        const loaded = loadAndProcessNet(netData, { trophyEligible: false });
+        if (loaded) {
+            presetNets.value = netName;
+            const savedEl = document.getElementById("savedNetsSelect");
+            if (savedEl) savedEl.value = "";
+        } else {
+            presetNets.value = "";
+        }
     } catch (error) {
         console.error("Error loading preset net:", error);
         alert(`Error loading preset net: ${error.message}`);
-    } finally {
         presetNets.value = "";
     }
 });

@@ -1,0 +1,5 @@
+# For tools/generate_catalan_nets.py (dmccooey responses use Brotli)
+# For tools/fold_net.py (nonlinear least-squares folding)
+numpy
+brotli
+scipy
